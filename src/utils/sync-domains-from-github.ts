@@ -6,13 +6,13 @@ import { disposableDomains, allowlistDomains } from "@/db/schema";
 // Fetch and update blocklist/allowlist data from GitHub
 export async function syncDomainsFromGitHub() {
   try {
-    // Fetch the blocklist 
-    const blocklistResponse = await fetch(process.env.BLOCKLIST_URL);
+    // Fetch the blocklist
+    const blocklistResponse = await fetch(process.env.BLOCKLIST_URL!);
     const blocklistText = await blocklistResponse.text();
     const blocklistDomains = blocklistText.split("\n").filter(Boolean);
 
     // Fetch the allowlist
-    const allowlistResponse = await fetch(process.env.ALLOWLIST_URL);
+    const allowlistResponse = await fetch(process.env.ALLOWLIST_URL!);
     const allowlistText = await allowlistResponse.text();
     const allowlistDomainsString = allowlistText.split("\n").filter(Boolean);
 
@@ -43,8 +43,10 @@ export async function syncDomainsFromGitHub() {
     }
 
     // Refresh the Redis cache
-    const updatedBlocklist = await db.select().from(disposableDomains);
-    const updatedAllowlist = await db.select().from(allowlistDomains);
+    const [updatedBlocklist, updatedAllowlist] = await Promise.all([
+      db.select().from(disposableDomains),
+      db.select().from(allowlistDomains),
+    ]);
 
     await redis.set("blocklist", JSON.stringify(updatedBlocklist));
     await redis.set("allowlist", JSON.stringify(updatedAllowlist));

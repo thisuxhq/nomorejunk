@@ -30,7 +30,7 @@ app.post("/check-email", async (c) => {
   const { email } = await c.req.json();
   const ip = c.req.header("x-forwarded-for") || c.req.ip;
   const normalizedEmail = normalizeEmail(email);
-  const domain = normalizedEmail.split("@")[1];
+  const domain = normalizedEmail.split("@")[1]; // gmail.com
 
   // Check Redis cache first
   const cachedResult = await redis.get(`check-email:${domain}`);
@@ -138,7 +138,7 @@ app.post("/verify-email", async (c) => {
 
   // Default if not disposable
   await logAudit(email, domain, ip, "verified");
-  return c.json({ disposable: false });
+  return c.json({ disposable: false, reason: "Verified" });
 });
 
 // 3. Add to Blocklist
