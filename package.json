@@ -1,0 +1,24 @@
+{
+  "name": "NoMoreJunk",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "build": "bun build",
+    "start": "bun start",
+    "migrate": "drizzle-kit migrate",
+    "generate": "drizzle-kit generate",
+    "sync-domains": "ts-node src/syncDomains.ts",
+    "db-push": "drizzle-kit db-push"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "drizzle-orm": "^0.37.0",
+    "hono": "^4.6.12",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/pg": "^8.11.10",
+    "drizzle-kit": "^0.29.1",
+    "tsx": "^4.19.2"
+  }
+}
