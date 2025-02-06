@@ -54,17 +54,24 @@ POST /verify-email
 
 ### Manage Domain Lists
 ```http
-POST /blocklist    # Add domain to blocklist
-POST /allowlist    # Add domain to allowlist
-DELETE /remove-domain  # Remove domain from either list
-GET /domains      # List all domains (supports pagination)
+# Sync domains from GitHub
+GET /sync-domains
+
+# Manually refresh Redis cache
+POST /refresh-cache
 ```
 
-### Other Useful Endpoints
-- `GET /sync-domains` - Sync domains from GitHub
-- `POST /refresh-cache` - Manually refresh Redis cache
-- `GET /audit-logs` - View check history (supports pagination)
-- `GET /audit-logs/:email` - Check history for specific email
+### Audit Logging
+```http
+# Get all audit logs (paginated)
+GET /audit-logs?page=1&limit=10
+
+# Alternative pagination endpoint
+GET /audit-logs/pagination?page=1&limit=10
+
+# Get audit logs for specific email
+GET /audit-logs/{email}
+```
 
 ## Database Stuff
 
