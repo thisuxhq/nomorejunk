@@ -34,44 +34,130 @@ BLOCKLIST_URL=github_raw_url_to_blocklist
 ALLOWLIST_URL=github_raw_url_to_allowlist
 ```
 
-## API Endpoints
+## API Documentation
 
-### Check if an Email is Disposable
-```http
-POST /check-email
-{
-  "email": "user@example.com"
-}
-```
+### Base URL
+All endpoints are prefixed with: `/api.nomorejunk.com`
 
-### Verify Email (Alternative Endpoint)
+### Authentication
+Bearer token authentication is required for all endpoints except `/verify-email`.
+
+### Endpoints
+
+#### Email Verification
+
+##### Verify Email
 ```http
 POST /verify-email
+Content-Type: application/json
+
 {
   "email": "user@example.com"
 }
 ```
 
-### Manage Domain Lists
-```http
-# Sync domains from GitHub
-GET /sync-domains
+#### Domain Management
 
-# Manually refresh Redis cache
+##### Add/Update Domains
+```http
+POST /blocklist
+POST /allowlist
+Content-Type: application/json
+
+{
+  "domain": "example.com"
+}
+```
+
+##### Remove Domain
+```http
+DELETE /remove-domain
+Content-Type: application/json
+
+{
+  "domain": "example.com",
+  "type": "disposable|allowlist"
+}
+```
+
+##### List Domains
+```http
+GET /domains?type=disposable|allowlist&page=1&limit=10
+```
+
+#### System Operations
+
+##### Sync & Cache Management
+```http
+GET /sync-domains
 POST /refresh-cache
 ```
 
-### Audit Logging
+#### Audit Logging
+
+##### Audit Log Endpoints
 ```http
-# Get all audit logs (paginated)
 GET /audit-logs?page=1&limit=10
-
-# Alternative pagination endpoint
 GET /audit-logs/pagination?page=1&limit=10
-
-# Get audit logs for specific email
 GET /audit-logs/{email}
 ```
+
+### Response Formats
+
+#### Success Responses
+
+```json
+// Email Verification Success
+{
+  "status": "success",
+  "disposable": false,
+  "reason": "Domain allowlisted",
+  "domain": "example.com",
+  "message": "Email address is valid and safe to use"
+}
+
+// Domain Operation Success
+{
+  "status": "success",
+  "message": "Operation completed successfully",
+  "domain": "example.com",
+  "type": "disposable|allowlist"
+}
+
+// Audit Logs Success
+{
+  "status": "success",
+  "message": "Audit logs retrieved successfully",
+  "logs": [
+    {
+      "id": "uuid",
+      "email": "user@example.com",
+      "domain": "example.com",
+      "ip": "ip_address",
+      "action": "action_type",
+      "timestamp": "timestamp"
+    }
+  ]
+}
+```
+
+#### Error Responses
+
+```json
+{
+  "status": "error",
+  "message": "Error description",
+  "error": "Detailed error message"  // Only in 500 responses
+}
+```
+
+Common HTTP Status Codes:
+- 200: Success
+- 201: Created
+- 400: Bad Request
+- 401: Unauthorized
+- 403: Forbidden
+- 500: Internal Server Error
 
 ## Database Stuff
 

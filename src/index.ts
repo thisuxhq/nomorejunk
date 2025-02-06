@@ -6,6 +6,7 @@ import { redis } from "@/cache";
 import { eq, and, desc } from "drizzle-orm";
 import { logAudit } from "@/utils/audit";
 import { syncDomainsFromGitHub } from "@/utils/sync-domains-from-github";
+import { authMiddleware } from "./middleware/auth";
 
 const app = new Hono().basePath("/api.nomorejunk.com")
 
@@ -14,7 +15,7 @@ app.get("/", (c) => {
 });
 
 // Sync Domains from GitHub
-app.get("/sync-domains", async (c) => {
+app.get("/sync-domains",authMiddleware, async (c) => {
   try {
     const startTime = new Date();
     await syncDomainsFromGitHub();
@@ -117,7 +118,7 @@ app.get("/sync-domains", async (c) => {
 // });
 
 // 2. Verify if Email is Disposable (new endpoint)
-app.post("/verify-email", async (c) => {
+app.post("/verify-email",authMiddleware,  async (c) => {
 
   // Get email from request body
   const { email } = await c.req.json();
@@ -254,8 +255,11 @@ app.post("/verify-email", async (c) => {
   }
 });
 
+
+
+
 // 3. Add to Blocklist
-app.post("/blocklist", async (c) => {
+app.post("/blocklist",authMiddleware,  async (c) => {
   try {
     const { domain } = await c.req.json();
 
@@ -317,7 +321,7 @@ app.post("/blocklist", async (c) => {
   }
 });
 
-app.post("/allowlist", async (c) => {
+app.post("/allowlist",authMiddleware,  async (c) => {
   try {
     const { domain } = await c.req.json();
 
@@ -379,7 +383,7 @@ app.post("/allowlist", async (c) => {
 });
 
 // 5. Get All Domains (with pagination)
-app.get("/domains", async (c) => {
+app.get("/domains",authMiddleware,  async (c) => {
   try {
     const { type, page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);
@@ -415,7 +419,7 @@ app.get("/domains", async (c) => {
 });
 
 // 6. Remove Domain
-app.delete("/remove-domain", async (c) => {
+app.delete("/remove-domain",authMiddleware,  async (c) => {
   try {
     const { domain, type } = await c.req.json();
 
@@ -480,8 +484,9 @@ app.delete("/remove-domain", async (c) => {
   }
 });
 
+
 // 7. Refresh Cache
-app.post("/refresh-cache", async (c) => {
+app.post("/refresh-cache",authMiddleware,  async (c) => {
   try {
     const domains = await db.select().from(domainListsTable);
     
@@ -512,7 +517,7 @@ app.post("/refresh-cache", async (c) => {
 });
 
 // 8. Get Audit Logs
-app.get("/audit-logs", async (c) => {
+app.get("/audit-logs",authMiddleware,  async (c) => {
   try {
     const { page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);
@@ -542,7 +547,7 @@ app.get("/audit-logs", async (c) => {
 });
 
 // 9. Get Audit Logs (with pagination)
-app.get("/audit-logs/pagination", async (c) => {
+app.get("/audit-logs/pagination",authMiddleware,  async (c) => {
   try {
     const { page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);
@@ -569,7 +574,8 @@ app.get("/audit-logs/pagination", async (c) => {
   }
 });
 
-app.get("/audit-logs/:email", async (c) => {
+
+app.get("/audit-logs/:email",authMiddleware,  async (c) => {
   try {
     const { email } = c.req.param();
 
