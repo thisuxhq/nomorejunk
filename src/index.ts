@@ -7,7 +7,7 @@ import { eq, and, desc } from "drizzle-orm";
 import { logAudit } from "@/utils/audit";
 import { syncDomainsFromGitHub } from "@/utils/sync-domains-from-github";
 
-const app = new Hono();
+const app = new Hono().basePath("/api.nomorejunk.com")
 
 app.get("/", (c) => {
   return c.text("Hello Hono!");
@@ -136,39 +136,11 @@ app.post("/verify-email", async (c) => {
   // Extract domain from email
   const domain = normalizedEmail.split("@")[1];
 
-  // Check Redis cache first
-  const cachedBlocklist = await redis.get("blocklist");
-  const cachedAllowlist = await redis.get("allowlist");
-
-  // Parse cached lists
-  const blocklistDomains = cachedBlocklist ? JSON.parse(cachedBlocklist) : [];
-  const allowlistDomains = cachedAllowlist ? JSON.parse(cachedAllowlist) : [];
-
-  // Check allowlist
-  if (allowlistDomains.includes(domain)) {
-    await logAudit(email, domain, ip, "verified_allowlisted");
-    return c.json({
-      status: "success",
-      disposable: false,
-      reason: "This email domain is trusted and allowlisted",
-      domain: domain,
-      message: "Email address is valid and safe to use"
-    }, 200);
+  const cachedResult = await redis.get(`check-email:${domain}`);
+  if (cachedResult) {
+    return c.json(JSON.parse(cachedResult));
   }
 
-  // Check blocklist
-  if (blocklistDomains.includes(domain)) {
-    await logAudit(email, domain, ip, "blocked_disposable");
-    return c.json({
-      status: "blocked",
-      disposable: true,
-      reason: "This email domain is not allowed",
-      domain: domain,
-      message: "Please use a different email address from a trusted provider",
-    }, 403);
-  }
-
-  // If not found in cache, check database as fallback
   const allowlistDb = await db
     .select()
     .from(domainListsTable)
@@ -181,11 +153,16 @@ app.post("/verify-email", async (c) => {
   if (allowlistDb.length > 0) {
     await logAudit(email, domain, ip, "verified_allowlisted_db");
     try {
-      if(!allowlistDomains.includes(domain)) {
-        allowlistDomains.push(domain);
-        // Update Redis cache
-        await redis.set("allowlist", JSON.stringify(allowlistDomains));
+
+      const result = {
+        status: "success",
+        disposable: false,
+        reason: "Domain allowlisted",
+        domain: domain,
+        message: "Email address is valid and safe to use"
       }
+
+      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
     }
     catch(error) {
       console.error("Redis cache update failed:", error);
@@ -221,10 +198,14 @@ app.post("/verify-email", async (c) => {
     // Update Redis cache
     try
     {
-      if(!blocklistDomains.includes(domain)) {
-        blocklistDomains.push(domain);
-        await redis.set("blocklist", JSON.stringify(blocklistDomains));
+      const result = {
+        status: "blocked",
+        disposable: true,
+        reason: "This email domain is not allowed",
+        domain: domain,
+        message: "Please use a different email address from a trusted provider",
       }
+      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
     }
     catch(error) {
       console.error("Redis cache update failed:", error);
@@ -238,38 +219,51 @@ app.post("/verify-email", async (c) => {
       }, 403);
     }
 
-    return c.json({
-      status: "blocked",
-      disposable: true,
-      reason: "This email domain is not allowed",
-      domain: domain,
-      message: "Please use a different email address from a trusted provider",
-    }, 403);
-  }
 
-  // Default if not disposable
-  await logAudit(email, domain, ip, "verified_unknown");
-  return c.json({
-    status: "success",
-    disposable: false,
-    reason: "Domain not found in any lists",
-    domain: domain,
-    message: "Email address appears to be valid"
-  }, 200);
+    const domainMatcher = createDomainMatcher(
+      blocklistDb.map((d) => d.domain),
+    );
+
+
+    const isSimilar = domainMatcher.match(domain);
+    if (isSimilar) {
+      await logAudit(email, domain, ip, "blocked_similarity");
+      const result = {
+        status: "blocked",
+        disposable: true,
+        reason: "Similar to known disposable domains",
+        domain: domain,
+        message: "Please use a different email address from a trusted provider",
+      };
+      // Cache result for 1 day (86400 seconds)
+      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+      return c.json(result);
+    }
+
+    await logAudit(email, domain, ip, "verified_unknown");
+    const result = {
+      status: "success",
+      disposable: false,
+      reason: "Domain not found in any lists",
+      domain: domain,
+      message: "Email address appears to be valid"
+    };
+    // Cache result for 1 day (86400 seconds)
+    await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+    return c.json(result);
+  }
 });
 
 // 3. Add to Blocklist
 app.post("/blocklist", async (c) => {
-
-  try
-  {
-    // Get domain from request body
+  try {
     const { domain } = await c.req.json();
 
     if (!domain) {
       return c.json({
         status: "error",
         message: "Domain is required",
+        timestamp: new Date().toISOString()
       }, 400);
     }
 
@@ -281,95 +275,61 @@ app.post("/blocklist", async (c) => {
         eq(domainListsTable.domain, normalizedDomain),
       ));
     
-    if(existingDomain.type === 'disposable') {
+    if(existingDomain?.type === 'disposable') {
       return c.json({
         status: "error",
         message: "Domain already exists in blocklist",
+        timestamp: new Date().toISOString()
       }, 400);
     }
-    else if(existingDomain.type === 'allowlist') {
+
+    if(existingDomain?.type === 'allowlist') {
       await db
         .update(domainListsTable)
         .set({ type: 'disposable' })
         .where(eq(domainListsTable.domain, normalizedDomain));
 
-      // Update Redis cache
-      try
-      {
-          const cachedBlocklist = await redis.get("blocklist");
-          const cachedAllowlist = await redis.get("allowlist");
-          const blocklistDomains = cachedBlocklist ? JSON.parse(cachedBlocklist) : [];
-          const allowlistDomains = cachedAllowlist ? JSON.parse(cachedAllowlist) : [];
-          blocklistDomains.push(normalizedDomain);
-          allowlistDomains.splice(allowlistDomains.indexOf(normalizedDomain), 1);
-          await redis.set("blocklist", JSON.stringify(blocklistDomains));
-          await redis.set("allowlist", JSON.stringify(allowlistDomains));
-
-          return c.json({
-            status: "success",
-            message: "Domain successfully moved to blocklist",
-            domain: normalizedDomain,
-            type: "disposable",
-            details: "This domain will now be blocked for all email verifications"
-          }, 201);
-
-      }
-      catch(error)
-      {
-          console.error("Redis cache update failed:", error);
-          return c.json({
-            status: "success",
-            message: "Domain successfully moved to blocklist",
-            domain: normalizedDomain,
-            type: "disposable",
-            details: "This domain will now be blocked for all email verifications"
-          }, 201);
-      }
-  }
+      return c.json({
+        status: "success",
+        disposable: true,
+        message: "Domain moved from allowlist to blocklist",
+        domain: normalizedDomain,
+      }, 200);
+    }
 
     await db
       .insert(domainListsTable)
       .values({ domain: normalizedDomain, type: 'disposable' });
 
-    // Update Redis cache
-    const cachedBlocklist = await redis.get("blocklist");
-    const blocklistDomains = cachedBlocklist ? JSON.parse(cachedBlocklist) : [];
-    blocklistDomains.push(normalizedDomain);
-    await redis.set("blocklist", JSON.stringify(blocklistDomains));
-
     return c.json({
       status: "success",
-      message: "Domain successfully added to blocklist",
+      message: "Domain added to blocklist",
       domain: normalizedDomain,
-      type: "disposable",
-      details: "This domain will now be blocked for all email verifications"
     }, 201);
-  }
-  catch(error) {
+
+  } catch(error) {
     return c.json({
       status: "error",
       message: "Failed to add domain to blocklist",
       error: (error as Error).message,
+      timestamp: new Date().toISOString()
     }, 500);
   }
-  
 });
 
-// 4. Add to Allowlist
 app.post("/allowlist", async (c) => {
   try {
-    // Get domain from request body
     const { domain } = await c.req.json();
 
     if (!domain) {
       return c.json({
         status: "error",
         message: "Domain is required",
+        timestamp: new Date().toISOString()
       }, 400);
     }
 
     const normalizedDomain = domain.toLowerCase();
-
     const [existingDomain] = await db
       .select()
       .from(domainListsTable)
@@ -377,76 +337,43 @@ app.post("/allowlist", async (c) => {
         eq(domainListsTable.domain, normalizedDomain),
       ));
 
-    if(existingDomain.type === 'allowlist') {
+    if(existingDomain?.type === 'allowlist') {
       return c.json({
         status: "error",
         message: "Domain already exists in allowlist",
       }, 400);
     }
-    else if(existingDomain.type === 'disposable') {
+
+    if(existingDomain?.type === 'disposable') {
       await db
         .update(domainListsTable)
         .set({ type: 'allowlist' })
         .where(eq(domainListsTable.domain, normalizedDomain));
-      
-      // Update Redis cache
-      try
-      {
-          const cachedBlocklist = await redis.get("blocklist");
-          const cachedAllowlist = await redis.get("allowlist");
-          const blocklistDomains = cachedBlocklist ? JSON.parse(cachedBlocklist) : [];
-          const allowlistDomains = cachedAllowlist ? JSON.parse(cachedAllowlist) : [];
-          allowlistDomains.push(normalizedDomain);
-          blocklistDomains.splice(blocklistDomains.indexOf(normalizedDomain), 1);
-          await redis.set("blocklist", JSON.stringify(blocklistDomains));
-          await redis.set("allowlist", JSON.stringify(allowlistDomains));
 
-          return c.json({
-            status: "success",
-            message: "Domain successfully moved to allowlist",
-            domain: normalizedDomain,
-            type: "allowlist",
-            details: "This domain will now be trusted for all email verifications"
-          }, 201);
-      }
-      catch(error)
-      {
-          console.error("Redis cache update failed:", error);
-          return c.json({
-            status: "success",
-            message: "Domain successfully moved to allowlist",
-            domain: normalizedDomain,
-            type: "allowlist",
-            details: "This domain will now be trusted for all email verifications"
-          }, 201);
-      }
+      return c.json({
+        status: "success",
+        disposable: false,
+        message: "Domain moved from blocklist to allowlist",
+        domain: normalizedDomain,
+      }, 200);
     }
 
-    
-    // Insert into database
     await db
       .insert(domainListsTable)
-      .values({ domain:normalizedDomain, type: 'allowlist' });
-
-    // Update Redis cache
-    const cachedAllowlist = await redis.get("allowlist");
-    const allowlistDomains = cachedAllowlist ? JSON.parse(cachedAllowlist) : [];
-    allowlistDomains.push(normalizedDomain);
-    await redis.set("allowlist", JSON.stringify(allowlistDomains));
+      .values({ domain: normalizedDomain, type: 'allowlist' });
 
     return c.json({
       status: "success",
-      message: "Domain successfully added to allowlist",
+      message: "Domain added to allowlist",
       domain: normalizedDomain,
       type: "allowlist",
-      details: "This domain will now be trusted for all email verifications"
     }, 201);
 
-  } catch (error) {
+  } catch(error) {
     return c.json({
       status: "error",
       message: "Failed to add domain to allowlist",
-      error: (error as Error).message, 
+      error: (error as Error).message,
     }, 500);
   }
 });
@@ -615,7 +542,7 @@ app.get("/audit-logs", async (c) => {
 });
 
 // 9. Get Audit Logs (with pagination)
-app.get("/audit-logs", async (c) => {
+app.get("/audit-logs/pagination", async (c) => {
   try {
     const { page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);

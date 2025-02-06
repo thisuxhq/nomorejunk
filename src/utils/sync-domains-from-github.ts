@@ -3,21 +3,24 @@ import { redis } from "@/cache";
 import { db } from "@/db/db";
 import {  domainListsTable, type InsertDomainListsTable } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import "dotenv/config";
 
 // Fetch and update blocklist/allowlist data from GitHub
 export async function syncDomainsFromGitHub() {
   try {
 
-    const blocklistResponse = await fetch("https://raw.githubusercontent.com/martenson/disposable-email-domains/master/disposable_email_blocklist.conf");
-    console.log("blocklistResponse", blocklistResponse);
-    
+
+ // Get blocklist
+    const BLOCKLIST_URL = process.env.BLOCKLIST_URL!;
+    const blocklistResponse = await fetch(BLOCKLIST_URL);
     const blocklistText = await blocklistResponse.text();
     const blocklistDomains = blocklistText.split("\n").filter(Boolean);
 
-    const allowlistResponse = await fetch("https://raw.githubusercontent.com/martenson/disposable-email-domains/master/allowlist.conf");
-    
+    // Get allowlist
+    const ALLOWLIST_URL = process.env.ALLOW_LIST_URL!;
+    const allowlistResponse = await fetch(ALLOWLIST_URL);
     const allowlistText = await allowlistResponse.text();
-    const allowlistDomainsString = allowlistText.split("\n").filter(Boolean);
+    const allowlistDomains = allowlistText.split("\n").filter(Boolean);
 
     // Clear existing domains
     await db.delete( domainListsTable);
@@ -33,7 +36,7 @@ export async function syncDomainsFromGitHub() {
       await db.insert( domainListsTable).values(batch);
     }
     // Update the allowlist in the database
-    const allowlistData: InsertDomainListsTable[] = allowlistDomainsString.map((domain) => ({
+    const allowlistData: InsertDomainListsTable[] = allowlistDomains.map((domain) => ({
       domain: domain.trim().toLowerCase(),
       type: "allowlist" as const,
     }));
