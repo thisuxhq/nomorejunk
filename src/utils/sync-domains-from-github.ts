@@ -1,51 +1,52 @@
 import "dotenv/config";
 import { redis } from "@/cache";
 import { db } from "@/db/db";
-import { disposableDomains, allowlistDomains } from "@/db/schema";
+import {  domainListsTable, type InsertDomainListsTable } from "@/db/schema";
+import { eq } from "drizzle-orm";
 
 // Fetch and update blocklist/allowlist data from GitHub
 export async function syncDomainsFromGitHub() {
   try {
-    // Fetch the blocklist
-    const blocklistResponse = await fetch(process.env.BLOCKLIST_URL!);
+
+    const blocklistResponse = await fetch("https://raw.githubusercontent.com/martenson/disposable-email-domains/master/disposable_email_blocklist.conf");
+    console.log("blocklistResponse", blocklistResponse);
+    
     const blocklistText = await blocklistResponse.text();
     const blocklistDomains = blocklistText.split("\n").filter(Boolean);
 
-    // Fetch the allowlist
-    const allowlistResponse = await fetch(process.env.ALLOWLIST_URL!);
+    const allowlistResponse = await fetch("https://raw.githubusercontent.com/martenson/disposable-email-domains/master/allowlist.conf");
+    
     const allowlistText = await allowlistResponse.text();
     const allowlistDomainsString = allowlistText.split("\n").filter(Boolean);
 
     // Clear existing domains
-    await db.delete(disposableDomains);
-    await db.delete(allowlistDomains);
+    await db.delete( domainListsTable);
 
     // Update the blocklist in the database
-    const blocklistData = blocklistDomains.map((domain) => ({
-      id: crypto.randomUUID(),
+    const blocklistData: InsertDomainListsTable[] = blocklistDomains.map((domain) => ({
       domain: domain.trim().toLowerCase(),
+      type: "disposable" as const,
     }));
 
     for (let i = 0; i < blocklistData.length; i += 1000) {
       const batch = blocklistData.slice(i, i + 1000);
-      await db.insert(disposableDomains).values(batch);
+      await db.insert( domainListsTable).values(batch);
     }
-
     // Update the allowlist in the database
-    const allowlistData = allowlistDomainsString.map((domain) => ({
-      id: crypto.randomUUID(),
+    const allowlistData: InsertDomainListsTable[] = allowlistDomainsString.map((domain) => ({
       domain: domain.trim().toLowerCase(),
+      type: "allowlist" as const,
     }));
 
     for (let i = 0; i < allowlistData.length; i += 1000) {
       const batch = allowlistData.slice(i, i + 1000);
-      await db.insert(allowlistDomains).values(batch);
+      await db.insert( domainListsTable).values(batch);
     }
 
     // Refresh the Redis cache
     const [updatedBlocklist, updatedAllowlist] = await Promise.all([
-      db.select().from(disposableDomains),
-      db.select().from(allowlistDomains),
+      db.select().from( domainListsTable).where(eq(domainListsTable.type, "disposable")),
+      db.select().from(domainListsTable).where(eq(domainListsTable.type, "allowlist")),
     ]);
 
     await redis.set("blocklist", JSON.stringify(updatedBlocklist));

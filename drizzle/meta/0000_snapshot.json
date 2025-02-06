@@ -1,49 +1,9 @@
 {
-  "id": "44f7c248-5a66-4363-8458-2873c0e6e236",
+  "id": "32392f76-df72-4134-96ca-4231f7bb4cd0",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.allowlist_domains": {
-      "name": "allowlist_domains",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "domain": {
-          "name": "domain",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "allowlist_domains_domain_unique": {
-          "name": "allowlist_domains_domain_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "domain"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.audit_logs": {
       "name": "audit_logs",
       "schema": "",
@@ -94,8 +54,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.disposable_domains": {
-      "name": "disposable_domains",
+    "public.domain_lists": {
+      "name": "domain_lists",
       "schema": "",
       "columns": {
         "id": {
@@ -107,6 +67,13 @@
         "domain": {
           "name": "domain",
           "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "domain_list_type",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true
         },
@@ -122,8 +89,8 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "disposable_domains_domain_unique": {
-          "name": "disposable_domains_domain_unique",
+        "domain_lists_domain_unique": {
+          "name": "domain_lists_domain_unique",
           "nullsNotDistinct": false,
           "columns": [
             "domain"
@@ -135,7 +102,16 @@
       "isRLSEnabled": false
     }
   },
-  "enums": {},
+  "enums": {
+    "public.domain_list_type": {
+      "name": "domain_list_type",
+      "schema": "public",
+      "values": [
+        "disposable",
+        "allowlist"
+      ]
+    }
+  },
   "schemas": {},
   "sequences": {},
   "roles": {},
