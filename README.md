@@ -40,9 +40,43 @@ ALLOWLIST_URL=github_raw_url_to_allowlist
 All endpoints are prefixed with: `/api.nomorejunk.com`
 
 ### Authentication
-Bearer token authentication is required for all endpoints except `/verify-email`.
+Bearer token authentication is required for all endpoints except `/register` and `/login`.
+
+Token format: `Authorization: Bearer <your_token>`
 
 ### Endpoints
+
+#### Authentication
+
+##### Register
+```http
+POST /register
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "your_secure_password"
+}
+```
+
+##### Login
+```http
+POST /login
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "your_password"
+}
+```
+
+Response:
+```json
+{
+  "message": "Login successful",
+  "token": "your_jwt_token"
+}
+```
 
 #### Email Verification
 
@@ -107,6 +141,20 @@ GET /audit-logs/{email}
 #### Success Responses
 
 ```json
+// Authentication Success
+{
+  "message": "Login successful",
+  "token": "jwt_token_here"
+}
+
+// Registration Success
+{
+  "message": "Registration successful",
+  "user": {
+    "email": "user@example.com"
+  }
+}
+
 // Email Verification Success
 {
   "status": "success",
@@ -147,7 +195,8 @@ GET /audit-logs/{email}
 {
   "status": "error",
   "message": "Error description",
-  "error": "Detailed error message"  // Only in 500 responses
+  "details": "Additional error context",  // Only in validation errors
+  "error": "Detailed error message"      // Only in 500 responses
 }
 ```
 
@@ -155,8 +204,9 @@ Common HTTP Status Codes:
 - 200: Success
 - 201: Created
 - 400: Bad Request
-- 401: Unauthorized
-- 403: Forbidden
+- 401: Unauthorized (Invalid credentials)
+- 403: Forbidden (Valid token required)
+- 409: Conflict (Resource already exists)
 - 500: Internal Server Error
 
 ## Database Stuff

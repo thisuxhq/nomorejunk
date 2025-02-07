@@ -3,6 +3,15 @@ import { nanoid } from "nanoid";
 
 export const domainListTypeEnum = pgEnum('domain_list_type', ['disposable', 'allowlist']);
 
+
+export const usersTable = pgTable('users', {
+  id: text("id").$defaultFn(() => nanoid(6)).primaryKey(),
+  email: text('email').unique().notNull(),
+  password: text('password').notNull(),
+  created_at: timestamp("created_at").defaultNow(),
+})
+
+
 export const domainListsTable = pgTable("domain_lists", {
   id: text("id").$defaultFn(()=>nanoid(6)).primaryKey(),
   domain: text("domain").notNull().unique(),
@@ -18,6 +27,11 @@ export const auditLogsTable = pgTable("audit_logs", {
   ip: text("ip"),
   timestamp: timestamp("timestamp").defaultNow(),
 });
+
+
+export type SelectUsersTable = typeof usersTable.$inferSelect;
+export type InsertUsersTable = typeof usersTable.$inferInsert;
+
 
 export type SelectDomainListsTable = typeof domainListsTable.$inferSelect;
 export type SelectauditLogsTable = typeof auditLogsTable.$inferSelect;

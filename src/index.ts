@@ -1,8 +1,11 @@
 import { Hono } from "hono";
 import { db } from "@/db/db";
-import { domainListsTable, auditLogsTable } from "@/db/schema";
+import { usersTable, domainListsTable, auditLogsTable } from "@/db/schema";
+import { SelectUsersTable, InsertUsersTable } from "@/db/schema";
+import { sign } from 'hono/jwt'
 import { normalizeEmail, createDomainMatcher } from "@/utils";
 import { redis } from "@/cache";
+import * as bcrypt from "bcryptjs";
 import { eq, and, desc } from "drizzle-orm";
 import { logAudit } from "@/utils/audit";
 import { syncDomainsFromGitHub } from "@/utils/sync-domains-from-github";
@@ -10,16 +13,163 @@ import { authMiddleware } from "./middleware/auth";
 
 const app = new Hono().basePath("/api.nomorejunk.com")
 
+
+function validateEmail(email: string): boolean {
+  const emailRegex = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,4}$/
+  return emailRegex.test(email)
+
+}
+
 app.get("/", (c) => {
   return c.text("Hello Hono!");
 });
 
+// register user
+app.post('/register', async (c) => {
+  try {
+    const { email, password } = await c.req.json()
+
+    if (!email) {
+      return c.json({
+        error: 'Registration Error',
+        details: 'Email is required',
+        field: 'email'
+      }, 400)
+    }
+    if (!password) {
+      return c.json({
+        error: 'Registration Error',
+        details: 'Password is required',
+        field: 'password'
+      }, 400)
+    }
+
+    if (!validateEmail(email)) {
+      return c.json({
+        error: 'Registration Error',
+        details: 'Invalid email address',
+        field: 'email'
+      })
+    }
+
+    const [existingUser] = await db.select().from(usersTable).where(eq(usersTable.email, email))
+    
+
+    if (existingUser) {
+      return c.json({
+        error: 'Registration Error',
+        details: 'Email already exists',
+        field: 'email'
+      }, 409)
+    }
+
+    const hashed_password = await bcrypt.hash(password, 10)
+
+    const userData: InsertUsersTable = {
+      email,
+      password: hashed_password,
+    }
+
+    const [newUser] = await db.insert(usersTable).values(userData).returning()
+
+    const userResponse: Partial<SelectUsersTable> = {
+      email: newUser.email,
+    }
+
+    return c.json({
+      message: 'Registration successful',
+      user: userResponse
+    }, 201)
+
+  }
+  catch (error) {
+    return c.json({
+      error: 'Internal Server Error',
+      details: 'Failed to process registration',
+      message: (error as Error).message
+    }, 500)
+  }
+
+})
+
+// login user
+app.post('/login', async (c) => {
+
+  try {
+    const { email, password } = await c.req.json()
+
+    if (!email || !password) {
+      return c.json({
+        error: 'Validation Error',
+        details: 'Missing credentials',
+        fields: {
+          email: !email ? 'email is required' : null,
+          password: !password ? 'Password is required' : null
+        }
+      }, 400)
+    }
+
+    const [user] = await db
+      .select({
+        id: usersTable.id,
+        email: usersTable.email,
+        password: usersTable.password
+      })
+      .from(usersTable)
+      .where(eq(usersTable.email, email))
+
+    console.log(user);
+    
+    if (!user) {
+      return c.json({ 
+        error: 'Authentication Error',
+        details: 'Invalid email or password'
+      }, 401)
+    }
+
+    const isValidPassword = await bcrypt.compare(password, user.password)
+    if (!isValidPassword) {
+      return c.json({
+        error: 'Authentication Error',
+        details: 'Invalid email or password'
+      }, 401)
+    }
+    if (!process.env.JWT_SECRET) {
+      return c.json({
+        error: 'Internal Server Error',
+        details: 'JWT secret is not configured'
+      }, 500)
+    }
+    const token = await sign({ id: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + (60 * 60) }, process.env.JWT_SECRET)
+
+    return c.json({
+      message: 'Login successful',
+      token
+    }, 200)
+
+  }
+  catch (error) {
+    return c.json({
+      error: 'Internal Server Error',
+      details: 'Failed to process login',
+      message: (error as Error).message
+    }, 500)
+  }
+
+
+
+
+
+})
+
+
+
 // Sync Domains from GitHub
-app.get("/sync-domains",authMiddleware, async (c) => {
+app.get("/sync-domains", authMiddleware, async (c) => {
   try {
     const startTime = new Date();
     await syncDomainsFromGitHub();
-    
+
     return c.json({
       status: "success",
       message: "Domain lists successfully synchronized from GitHub",
@@ -118,13 +268,13 @@ app.get("/sync-domains",authMiddleware, async (c) => {
 // });
 
 // 2. Verify if Email is Disposable (new endpoint)
-app.post("/verify-email",authMiddleware,  async (c) => {
+app.post("/verify-email", authMiddleware, async (c) => {
 
   // Get email from request body
   const { email } = await c.req.json();
 
   // Check if email is provided
-  if(!email) {
+  if (!email) {
     return c.json({ error: "Email is required" }, 400);
   }
 
@@ -150,7 +300,7 @@ app.post("/verify-email",authMiddleware,  async (c) => {
       eq(domainListsTable.type, 'allowlist')
     ));
 
-  
+
   if (allowlistDb.length > 0) {
     await logAudit(email, domain, ip, "verified_allowlisted_db");
     try {
@@ -165,7 +315,7 @@ app.post("/verify-email",authMiddleware,  async (c) => {
 
       await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
     }
-    catch(error) {
+    catch (error) {
       console.error("Redis cache update failed:", error);
       // Still return success even if cache update fails
       return c.json({
@@ -197,8 +347,7 @@ app.post("/verify-email",authMiddleware,  async (c) => {
   if (blocklistDb.length > 0) {
     await logAudit(email, domain, ip, "blocked_disposable_db");
     // Update Redis cache
-    try
-    {
+    try {
       const result = {
         status: "blocked",
         disposable: true,
@@ -208,7 +357,7 @@ app.post("/verify-email",authMiddleware,  async (c) => {
       }
       await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
     }
-    catch(error) {
+    catch (error) {
       console.error("Redis cache update failed:", error);
       // Still return blocked even if cache update fails
       return c.json({
@@ -259,7 +408,7 @@ app.post("/verify-email",authMiddleware,  async (c) => {
 
 
 // 3. Add to Blocklist
-app.post("/blocklist",authMiddleware,  async (c) => {
+app.post("/blocklist", authMiddleware, async (c) => {
   try {
     const { domain } = await c.req.json();
 
@@ -278,8 +427,8 @@ app.post("/blocklist",authMiddleware,  async (c) => {
       .where(and(
         eq(domainListsTable.domain, normalizedDomain),
       ));
-    
-    if(existingDomain?.type === 'disposable') {
+
+    if (existingDomain?.type === 'disposable') {
       return c.json({
         status: "error",
         message: "Domain already exists in blocklist",
@@ -287,7 +436,7 @@ app.post("/blocklist",authMiddleware,  async (c) => {
       }, 400);
     }
 
-    if(existingDomain?.type === 'allowlist') {
+    if (existingDomain?.type === 'allowlist') {
       await db
         .update(domainListsTable)
         .set({ type: 'disposable' })
@@ -311,7 +460,7 @@ app.post("/blocklist",authMiddleware,  async (c) => {
       domain: normalizedDomain,
     }, 201);
 
-  } catch(error) {
+  } catch (error) {
     return c.json({
       status: "error",
       message: "Failed to add domain to blocklist",
@@ -321,7 +470,7 @@ app.post("/blocklist",authMiddleware,  async (c) => {
   }
 });
 
-app.post("/allowlist",authMiddleware,  async (c) => {
+app.post("/allowlist", authMiddleware, async (c) => {
   try {
     const { domain } = await c.req.json();
 
@@ -341,14 +490,14 @@ app.post("/allowlist",authMiddleware,  async (c) => {
         eq(domainListsTable.domain, normalizedDomain),
       ));
 
-    if(existingDomain?.type === 'allowlist') {
+    if (existingDomain?.type === 'allowlist') {
       return c.json({
         status: "error",
         message: "Domain already exists in allowlist",
       }, 400);
     }
 
-    if(existingDomain?.type === 'disposable') {
+    if (existingDomain?.type === 'disposable') {
       await db
         .update(domainListsTable)
         .set({ type: 'allowlist' })
@@ -373,7 +522,7 @@ app.post("/allowlist",authMiddleware,  async (c) => {
       type: "allowlist",
     }, 201);
 
-  } catch(error) {
+  } catch (error) {
     return c.json({
       status: "error",
       message: "Failed to add domain to allowlist",
@@ -383,7 +532,7 @@ app.post("/allowlist",authMiddleware,  async (c) => {
 });
 
 // 5. Get All Domains (with pagination)
-app.get("/domains",authMiddleware,  async (c) => {
+app.get("/domains", authMiddleware, async (c) => {
   try {
     const { type, page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);
@@ -419,7 +568,7 @@ app.get("/domains",authMiddleware,  async (c) => {
 });
 
 // 6. Remove Domain
-app.delete("/remove-domain",authMiddleware,  async (c) => {
+app.delete("/remove-domain", authMiddleware, async (c) => {
   try {
     const { domain, type } = await c.req.json();
 
@@ -448,23 +597,21 @@ app.delete("/remove-domain",authMiddleware,  async (c) => {
         eq(domainListsTable.type, type)
       ));
 
-    try
-    {
-        const cacheKey = type === 'disposable' ? 'blocklist' : 'allowlist';
-        const cached = await redis.get(cacheKey);
-        const cachedDomains = cached? JSON.parse(cached) : [];
-        cachedDomains.splice(cachedDomains.indexOf(domain), 1);
-        await redis.set(cacheKey, JSON.stringify(cachedDomains));
+    try {
+      const cacheKey = type === 'disposable' ? 'blocklist' : 'allowlist';
+      const cached = await redis.get(cacheKey);
+      const cachedDomains = cached ? JSON.parse(cached) : [];
+      cachedDomains.splice(cachedDomains.indexOf(domain), 1);
+      await redis.set(cacheKey, JSON.stringify(cachedDomains));
     }
-    catch(error)
-    {
-        console.error("Redis cache update failed:", error);
-        return c.json({
-          status: "success",
-          message: `Domain successfully removed from ${type} list`,
-          domain: domain,
-          type: type,
-        }, 200);
+    catch (error) {
+      console.error("Redis cache update failed:", error);
+      return c.json({
+        status: "success",
+        message: `Domain successfully removed from ${type} list`,
+        domain: domain,
+        type: type,
+      }, 200);
 
     }
     return c.json({
@@ -486,14 +633,14 @@ app.delete("/remove-domain",authMiddleware,  async (c) => {
 
 
 // 7. Refresh Cache
-app.post("/refresh-cache",authMiddleware,  async (c) => {
+app.post("/refresh-cache", authMiddleware, async (c) => {
   try {
     const domains = await db.select().from(domainListsTable);
-    
+
     const blocklist = domains
       .filter(d => d.type === 'disposable')
       .map(d => d.domain);
-    
+
     const allowlist = domains
       .filter(d => d.type === 'allowlist')
       .map(d => d.domain);
@@ -517,7 +664,7 @@ app.post("/refresh-cache",authMiddleware,  async (c) => {
 });
 
 // 8. Get Audit Logs
-app.get("/audit-logs",authMiddleware,  async (c) => {
+app.get("/audit-logs", authMiddleware, async (c) => {
   try {
     const { page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);
@@ -531,7 +678,7 @@ app.get("/audit-logs",authMiddleware,  async (c) => {
       .limit(Number(limit));
 
     return c.json({
-      status: "success", 
+      status: "success",
       message: "Audit logs retrieved successfully",
       logs
     }, 200);
@@ -547,7 +694,7 @@ app.get("/audit-logs",authMiddleware,  async (c) => {
 });
 
 // 9. Get Audit Logs (with pagination)
-app.get("/audit-logs/pagination",authMiddleware,  async (c) => {
+app.get("/audit-logs/pagination", authMiddleware, async (c) => {
   try {
     const { page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);
@@ -575,17 +722,17 @@ app.get("/audit-logs/pagination",authMiddleware,  async (c) => {
 });
 
 
-app.get("/audit-logs/:email",authMiddleware,  async (c) => {
+app.get("/audit-logs/:email", authMiddleware, async (c) => {
   try {
     const { email } = c.req.param();
 
-    if(!email) {
+    if (!email) {
       return c.json({
         status: "error",
         message: "Email is required",
       }, 400);
     }
-    
+
     const logs = await db
       .select()
       .from(auditLogsTable)
