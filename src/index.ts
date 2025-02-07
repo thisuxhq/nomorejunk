@@ -9,9 +9,11 @@ import * as bcrypt from "bcryptjs";
 import { eq, and, desc } from "drizzle-orm";
 import { logAudit } from "@/utils/audit";
 import { syncDomainsFromGitHub } from "@/utils/sync-domains-from-github";
-import { authMiddleware } from "./middleware/auth";
+import { authMiddleware, logger } from "./middleware/auth";
 
 const app = new Hono().basePath("/api.nomorejunk.com")
+
+app.use(logger)
 
 
 function validateEmail(email: string): boolean {
@@ -118,7 +120,6 @@ app.post('/login', async (c) => {
       .from(usersTable)
       .where(eq(usersTable.email, email))
 
-    console.log(user);
     
     if (!user) {
       return c.json({ 
@@ -269,111 +270,96 @@ app.get("/sync-domains", authMiddleware, async (c) => {
 
 // 2. Verify if Email is Disposable (new endpoint)
 app.post("/verify-email", authMiddleware, async (c) => {
+  try {
+    // Get email from request body
+    const { email } = await c.req.json();
 
-  // Get email from request body
-  const { email } = await c.req.json();
+    // Check if email is provided
+    if (!email) {
+      return c.json({ error: "Email is required" }, 400);
+    }
 
-  // Check if email is provided
-  if (!email) {
-    return c.json({ error: "Email is required" }, 400);
-  }
+    // Get IP address of the request
+    const ip = c.req.header("x-forwarded-for") || "unknown";
 
-  // Get IP address of the request
-  const ip = c.req.header("x-forwarded-for") || "unknown";
+    // Normalize email and extract domain
+    const normalizedEmail = normalizeEmail(email);
+    const domain = normalizedEmail.split("@")[1];
 
-  // Normalize email and extract domain
-  const normalizedEmail = normalizeEmail(email);
+    // Check cache first
+    const cachedResult = await redis.get(`check-email:${domain}`);
+    if (cachedResult) {
+      return c.json(JSON.parse(cachedResult));
+    }
 
-  // Extract domain from email
-  const domain = normalizedEmail.split("@")[1];
+    // Check allowlist
+    const allowlistDb = await db
+      .select()
+      .from(domainListsTable)
+      .where(and(
+        eq(domainListsTable.domain, domain),
+        eq(domainListsTable.type, 'allowlist')
+      ));
 
-  const cachedResult = await redis.get(`check-email:${domain}`);
-  if (cachedResult) {
-    return c.json(JSON.parse(cachedResult));
-  }
-
-  const allowlistDb = await db
-    .select()
-    .from(domainListsTable)
-    .where(and(
-      eq(domainListsTable.domain, domain),
-      eq(domainListsTable.type, 'allowlist')
-    ));
-
-
-  if (allowlistDb.length > 0) {
-    await logAudit(email, domain, ip, "verified_allowlisted_db");
-    try {
-
+    if (allowlistDb.length > 0) {
+      await logAudit(email, domain, ip, "verified_allowlisted_db");
       const result = {
         status: "success",
         disposable: false,
         reason: "Domain allowlisted",
         domain: domain,
         message: "Email address is valid and safe to use"
+      };
+
+      try {
+        await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+      } catch (error) {
+        console.error("Redis cache update failed:", error);
       }
 
-      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+      return c.json(result, 200);
     }
-    catch (error) {
-      console.error("Redis cache update failed:", error);
-      // Still return success even if cache update fails
-      return c.json({
-        status: "success",
-        disposable: false,
-        reason: "Domain allowlisted but cache update failed",
-        domain: domain,
-        message: "Email address is valid and safe to use"
-      }, 200);
-    }
-    return c.json({
-      status: "success",
-      disposable: false,
-      reason: "This email domain is trusted and allowlisted",
-      domain: domain,
-      message: "Email address is valid and safe to use"
-    }, 200);
-  }
 
-  const blocklistDb = await db
-    .select()
-    .from(domainListsTable)
-    .where(and(
-      eq(domainListsTable.domain, domain),
-      eq(domainListsTable.type, 'disposable')
-    ));
+    // Check blocklist
+    const blocklistDb = await db
+      .select()
+      .from(domainListsTable)
+      .where(and(
+        eq(domainListsTable.domain, domain),
+        eq(domainListsTable.type, 'disposable')
+      ));
 
-
-  if (blocklistDb.length > 0) {
-    await logAudit(email, domain, ip, "blocked_disposable_db");
-    // Update Redis cache
-    try {
+    console.log(blocklistDb,"1234");
+    
+    if (blocklistDb.length > 0) {
+      await logAudit(email, domain, ip, "blocked_disposable_db");
       const result = {
         status: "blocked",
         disposable: true,
         reason: "This email domain is not allowed",
         domain: domain,
-        message: "Please use a different email address from a trusted provider",
+        message: "Please use a different email address from a trusted provider"
+      };
+
+      try {
+        await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+      } catch (error) {
+        console.error("Redis cache update failed:", error);
       }
-      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
-    }
-    catch (error) {
-      console.error("Redis cache update failed:", error);
-      // Still return blocked even if cache update fails
-      return c.json({
-        status: "blocked",
-        disposable: true,
-        reason: "This email domain is not allowed",
-        domain: domain,
-        message: "Please use a different email address from a trusted provider",
-      }, 403);
+
+      return c.json(result, 403);
     }
 
+    // Fetch all disposable domains for matching
+    const disposableDomainsList = await db
+      .select({ domain: domainListsTable.domain })
+      .from(domainListsTable)
+      .where(eq(domainListsTable.type, 'disposable'));
 
+    // Check domain similarity using all disposable domains
     const domainMatcher = createDomainMatcher(
-      blocklistDb.map((d) => d.domain),
+      disposableDomainsList.map((d) => d.domain)
     );
-
 
     const isSimilar = domainMatcher.match(domain);
     if (isSimilar) {
@@ -383,13 +369,19 @@ app.post("/verify-email", authMiddleware, async (c) => {
         disposable: true,
         reason: "Similar to known disposable domains",
         domain: domain,
-        message: "Please use a different email address from a trusted provider",
+        message: "Please use a different email address from a trusted provider"
       };
-      // Cache result for 1 day (86400 seconds)
-      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
-      return c.json(result);
+
+      try {
+        await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+      } catch (error) {
+        console.error("Redis cache update failed:", error);
+      }
+
+      return c.json(result, 403);
     }
 
+    // If we get here, the domain is unknown but appears valid
     await logAudit(email, domain, ip, "verified_unknown");
     const result = {
       status: "success",
@@ -398,9 +390,22 @@ app.post("/verify-email", authMiddleware, async (c) => {
       domain: domain,
       message: "Email address appears to be valid"
     };
-    // Cache result for 1 day (86400 seconds)
-    await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
-    return c.json(result);
+
+    try {
+      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+    } catch (error) {
+      console.error("Redis cache update failed:", error);
+    }
+
+    return c.json(result, 200);
+
+  } catch (error) {
+    console.error("Verify email error:", error);
+    return c.json({
+      status: "error",
+      message: "Failed to verify email",
+      error: (error as Error).message
+    }, 500);
   }
 });
 
@@ -577,7 +582,6 @@ app.delete("/remove-domain", authMiddleware, async (c) => {
       return c.json({
         status: "error",
         message: "Domain and type are required",
-        timestamp: new Date().toISOString()
       }, 400);
     }
 
@@ -585,7 +589,6 @@ app.delete("/remove-domain", authMiddleware, async (c) => {
       return c.json({
         status: "error",
         message: "Invalid domain type. Must be 'disposable' or 'allowlist'",
-        timestamp: new Date().toISOString()
       }, 400);
     }
 
@@ -664,34 +667,7 @@ app.post("/refresh-cache", authMiddleware, async (c) => {
 });
 
 // 8. Get Audit Logs
-app.get("/audit-logs", authMiddleware, async (c) => {
-  try {
-    const { page = 1, limit = 10 } = c.req.query();
-    const offset = (Number(page) - 1) * Number(limit);
 
-    // Get paginated logs
-    const logs = await db
-      .select()
-      .from(auditLogsTable)
-      .orderBy(desc(auditLogsTable.timestamp))
-      .offset(offset)
-      .limit(Number(limit));
-
-    return c.json({
-      status: "success",
-      message: "Audit logs retrieved successfully",
-      logs
-    }, 200);
-
-  } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to retrieve audit logs",
-      error: (error as Error).message,
-      timestamp: new Date().toISOString()
-    }, 500);
-  }
-});
 
 // 9. Get Audit Logs (with pagination)
 app.get("/audit-logs/pagination", authMiddleware, async (c) => {

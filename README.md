@@ -98,9 +98,9 @@ POST /blocklist
 POST /allowlist
 Content-Type: application/json
 
-{
-  "domain": "example.com"
-}
+  {
+    "domain": "example.com"
+  }
 ```
 
 ##### Remove Domain
@@ -131,7 +131,6 @@ POST /refresh-cache
 
 ##### Audit Log Endpoints
 ```http
-GET /audit-logs?page=1&limit=10
 GET /audit-logs/pagination?page=1&limit=10
 GET /audit-logs/{email}
 ```
