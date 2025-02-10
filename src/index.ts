@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { db } from "@/db/db";
 import { usersTable, domainListsTable, auditLogsTable } from "@/db/schema";
 import { SelectUsersTable, InsertUsersTable } from "@/db/schema";
-import { jwt, sign } from "hono/jwt";
+import { sign } from "hono/jwt";
 import { normalizeEmail, createDomainMatcher, validateEmail } from "@/utils/email";
 import { redis } from "@/cache";
 import * as bcrypt from "bcryptjs";
@@ -10,6 +10,7 @@ import { eq, and, desc } from "drizzle-orm";
 import { logAudit } from "@/utils/audit";
 import { syncDomainsFromGitHub } from "@/utils/sync-domains-from-github";
 import { authMiddleware, logger } from "@/middleware/auth";
+import { EmailVerificationService } from "@/services/email-verification";
 
 const app = new Hono();
 
@@ -216,169 +217,31 @@ app.get("/sync-domains", authMiddleware, async (c) => {
   }
 });
 
-
-//  Verify if Email is Disposable (new endpoint)
+// Verify if Email is Disposable
 app.post("/verify-email", authMiddleware, async (c) => {
   try {
-    // Get email from request body
     const { email } = await c.req.json();
 
-    // Check if email is provided
     if (!email) {
-      return c.json({ error: "Hey! We need an email address to check" }, 400);
+      return c.json({ 
+        status: "error",
+        message: "Hey! We need an email address to check",
+        error: "Email is required" 
+      }, 400);
     }
 
-    // Get IP address of the request
     const ip = c.req.header("x-forwarded-for") || "unknown";
+    const result = await EmailVerificationService.verifyEmail(email, ip);
 
-    // Normalize email and extract domain
-    const normalizedEmail = normalizeEmail(email);
-    const domain = normalizedEmail.split("@")[1];
-
-    // Check cache first
-    const cachedResult = await redis.get(`check-email:${domain}`);
-    if (cachedResult) {
-      return c.json(JSON.parse(cachedResult));
-    }
-
-    // Check allowlist
-    const allowlistDb = await db
-      .select()
-      .from(domainListsTable)
-      .where(
-        and(
-          eq(domainListsTable.domain, domain),
-          eq(domainListsTable.type, "allowlist")
-        )
-      );
-
-    if (allowlistDb.length > 0) {
-      await logAudit(email, domain, ip, "verified_allowlisted_db");
-      const result = {
-        status: "success",
-        disposable: false,
-        reason: "This domain is on our trusted list",
-        domain: domain,
-        message: "Great news! This email address is from a trusted provider",
-      };
-
-      try {
-        await redis.set(
-          `check-email:${domain}`,
-          JSON.stringify(result),
-          "EX",
-          86400
-        );
-      } catch (error) {
-        console.error("Redis cache update failed:", error);
-      }
-
-      return c.json(result, 200);
-    }
-
-    // Check blocklist
-    const blocklistDb = await db
-      .select()
-      .from(domainListsTable)
-      .where(
-        and(
-          eq(domainListsTable.domain, domain),
-          eq(domainListsTable.type, "disposable")
-        )
-      );
-
-    if (blocklistDb.length > 0) {
-      await logAudit(email, domain, ip, "blocked_disposable_db");
-      const result = {
-        status: "blocked",
-        disposable: true,
-        reason: "This domain isn't allowed",
-        domain: domain,
-        message: "This looks like a temporary email address. Please use your regular email instead",
-      };
-
-      try {
-        await redis.set(
-          `check-email:${domain}`,
-          JSON.stringify(result),
-          "EX",
-          86400
-        );
-      } catch (error) {
-        console.error("Redis cache update failed:", error);
-      }
-
-      return c.json(result, 403);
-    }
-
-    // Fetch all disposable domains for matching
-    const disposableDomainsList = await db
-      .select({ domain: domainListsTable.domain })
-      .from(domainListsTable)
-      .where(eq(domainListsTable.type, "disposable"));
-
-    // Check domain similarity using all disposable domains
-    const domainMatcher = createDomainMatcher(
-      disposableDomainsList.map((d) => d.domain)
-    );
-
-    const isSimilar = domainMatcher.match(domain);
-    if (isSimilar) {
-      await logAudit(email, domain, ip, "blocked_similarity");
-      const result = {
-        status: "blocked",
-        disposable: true,
-        reason: "Similar to known disposable domains",
-        domain: domain,
-        message: "Please use a different email address from a trusted provider",
-      };
-
-      try {
-        await redis.set(
-          `check-email:${domain}`,
-          JSON.stringify(result),
-          "EX",
-          86400
-        );
-      } catch (error) {
-        console.error("Redis cache update failed:", error);
-      }
-
-      return c.json(result, 403);
-    }
-
-    // If we get here, the domain is unknown but appears valid
-    await logAudit(email, domain, ip, "verified_unknown");
-    const result = {
-      status: "success",
-      disposable: false,
-      reason: "This domain seems legitimate",
-      domain: domain,
-      message: "This email address looks good to use",
-    };
-
-    try {
-      await redis.set(
-        `check-email:${domain}`,
-        JSON.stringify(result),
-        "EX",
-        86400
-      );
-    } catch (error) {
-      console.error("Redis cache update failed:", error);
-    }
-
-    return c.json(result, 200);
+    // Return 403 for blocked domains, 200 for success
+    return c.json(result, result.status === "blocked" ? 403 : 200);
   } catch (error) {
     console.error("Verify email error:", error);
-    return c.json(
-      {
-        status: "error",
-        message: "We ran into a problem checking this email",
-        error: (error as Error).message,
-      },
-      500
-    );
+    return c.json({
+      status: "error",
+      message: "We ran into a problem checking this email",
+      error: (error as Error).message
+    }, 500);
   }
 });
 
