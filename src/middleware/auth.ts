@@ -5,8 +5,9 @@ import {verify} from 'hono/jwt'
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key'
 
 
-export const logger = async(c:Context) => {
+export const logger = async(c:Context, next:Next) => {
     console.log(`[${new Date().toISOString()}] ${c.req.method} ${c.req.url}`)
+    await next()
 }
 
 export const authMiddleware = async(c:Context, next:Next) => {

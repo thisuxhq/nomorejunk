@@ -657,51 +657,54 @@ app.post("/refresh-cache", authMiddleware, async (c) => {
 
     const blocklist = domains
       .filter((d) => d.type === "disposable")
-      .map((d) => d.domain);
+      .map((d) => ({ domain: d.domain, type: d.type }));
 
     const allowlist = domains
       .filter((d) => d.type === "allowlist")
-      .map((d) => d.domain);
+      .map((d) => ({ domain: d.domain, type: d.type }));
 
-    for (const domain of blocklist) {
-      await redis.set(
+    await redis.del(...await redis.keys('check-email:*'));
+
+    const pipeline = redis.pipeline();
+    
+    [...blocklist, ...allowlist].forEach(({ domain, type }) => {
+      const cacheData = type === 'disposable' 
+        ? {
+            status: "blocked",
+            disposable: true,
+            reason: "This email domain is not allowed",
+            domain,
+            message: "Please use a different email address from a trusted provider"
+          }
+        : {
+            status: "success",
+            disposable: false,
+            reason: "Domain allowlisted",
+            domain,
+            message: "Email address is valid and safe to use"
+          };
+
+      pipeline.set(
         `check-email:${domain}`,
-        JSON.stringify({
-          status: "blocked",
-          disposable: true,
-          reason: "This email domain is not allowed",
-          domain: domain,
-          message:
-            "Please use a different email address from a trusted provider",
-        }),
+        JSON.stringify(cacheData),
         "EX",
         86400
       );
-    }
+    });
 
-    for (const domain of allowlist) {
-      await redis.set(
-        `check-email:${domain}`,
-        JSON.stringify({
-          status: "success",
-          disposable: false,
-          reason: "Domain allowlisted",
-          domain: domain,
-          message: "Email address is valid and safe to use",
-        }),
-        "EX",
-        86400
-      );
-    }
+    // Execute all commands in the pipeline at once
+    await pipeline.exec();
 
     return c.json(
       {
         status: "success",
         message: "Cache refreshed! Everything is up to date now",
+        count: blocklist.length + allowlist.length
       },
       200
     );
   } catch (error) {
+    console.error("Cache refresh error:", error);
     return c.json(
       {
         status: "error",
