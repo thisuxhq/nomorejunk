@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { db } from "@/db/db";
 import { usersTable, domainListsTable, auditLogsTable } from "@/db/schema";
 import { SelectUsersTable, InsertUsersTable } from "@/db/schema";
-import { sign } from 'hono/jwt'
+import { sign } from "hono/jwt";
 import { normalizeEmail, createDomainMatcher } from "@/utils";
 import { redis } from "@/cache";
 import * as bcrypt from "bcryptjs";
@@ -11,15 +11,13 @@ import { logAudit } from "@/utils/audit";
 import { syncDomainsFromGitHub } from "@/utils/sync-domains-from-github";
 import { authMiddleware, logger } from "./middleware/auth";
 
-const app = new Hono().basePath("/api.nomorejunk.com")
+const app = new Hono().basePath("/api.nomorejunk.com");
 
-app.use(logger)
-
+app.use(logger);
 
 function validateEmail(email: string): boolean {
-  const emailRegex = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,4}$/
-  return emailRegex.test(email)
-
+  const emailRegex = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,4}$/;
+  return emailRegex.test(email);
 }
 
 app.get("/", (c) => {
@@ -27,143 +25,171 @@ app.get("/", (c) => {
 });
 
 // register user
-app.post('/register', async (c) => {
+app.post("/register", async (c) => {
   try {
-    const { email, password } = await c.req.json()
+    const { email, password } = await c.req.json();
 
     if (!email) {
-      return c.json({
-        error: 'Registration Error',
-        details: 'Email is required',
-        field: 'email'
-      }, 400)
+      return c.json(
+        {
+          error: "Registration Error",
+          details: "Email is required",
+          field: "email",
+        },
+        400
+      );
     }
     if (!password) {
-      return c.json({
-        error: 'Registration Error',
-        details: 'Password is required',
-        field: 'password'
-      }, 400)
+      return c.json(
+        {
+          error: "Registration Error",
+          details: "Password is required",
+          field: "password",
+        },
+        400
+      );
     }
 
     if (!validateEmail(email)) {
       return c.json({
-        error: 'Registration Error',
-        details: 'Invalid email address',
-        field: 'email'
-      })
+        error: "Registration Error",
+        details: "Invalid email address",
+        field: "email",
+      });
     }
 
-    const [existingUser] = await db.select().from(usersTable).where(eq(usersTable.email, email))
-    
+    const [existingUser] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.email, email));
 
     if (existingUser) {
-      return c.json({
-        error: 'Registration Error',
-        details: 'Email already exists',
-        field: 'email'
-      }, 409)
+      return c.json(
+        {
+          error: "Registration Error",
+          details: "Email already exists",
+          field: "email",
+        },
+        409
+      );
     }
 
-    const hashed_password = await bcrypt.hash(password, 10)
+    const hashed_password = await bcrypt.hash(password, 10);
 
     const userData: InsertUsersTable = {
       email,
       password: hashed_password,
-    }
+    };
 
-    const [newUser] = await db.insert(usersTable).values(userData).returning()
+    const [newUser] = await db.insert(usersTable).values(userData).returning();
 
     const userResponse: Partial<SelectUsersTable> = {
       email: newUser.email,
-    }
+    };
 
-    return c.json({
-      message: 'Registration successful',
-      user: userResponse
-    }, 201)
-
+    return c.json(
+      {
+        message: "Registration successful",
+        user: userResponse,
+      },
+      201
+    );
+  } catch (error) {
+    return c.json(
+      {
+        error: "Internal Server Error",
+        details: "Failed to process registration",
+        message: (error as Error).message,
+      },
+      500
+    );
   }
-  catch (error) {
-    return c.json({
-      error: 'Internal Server Error',
-      details: 'Failed to process registration',
-      message: (error as Error).message
-    }, 500)
-  }
-
-})
+});
 
 // login user
-app.post('/login', async (c) => {
-
+app.post("/login", async (c) => {
   try {
-    const { email, password } = await c.req.json()
+    const { email, password } = await c.req.json();
 
     if (!email || !password) {
-      return c.json({
-        error: 'Validation Error',
-        details: 'Missing credentials',
-        fields: {
-          email: !email ? 'email is required' : null,
-          password: !password ? 'Password is required' : null
-        }
-      }, 400)
+      return c.json(
+        {
+          error: "Validation Error",
+          details: "Missing credentials",
+          fields: {
+            email: !email ? "email is required" : null,
+            password: !password ? "Password is required" : null,
+          },
+        },
+        400
+      );
     }
 
     const [user] = await db
       .select({
         id: usersTable.id,
         email: usersTable.email,
-        password: usersTable.password
+        password: usersTable.password,
       })
       .from(usersTable)
-      .where(eq(usersTable.email, email))
+      .where(eq(usersTable.email, email));
 
-    
     if (!user) {
-      return c.json({ 
-        error: 'Authentication Error',
-        details: 'Invalid email or password'
-      }, 401)
+      return c.json(
+        {
+          error: "Authentication Error",
+          details: "Invalid email or password",
+        },
+        401
+      );
     }
 
-    const isValidPassword = await bcrypt.compare(password, user.password)
+    const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
-      return c.json({
-        error: 'Authentication Error',
-        details: 'Invalid email or password'
-      }, 401)
+      return c.json(
+        {
+          error: "Authentication Error",
+          details: "Invalid email or password",
+        },
+        401
+      );
     }
     if (!process.env.JWT_SECRET) {
-      return c.json({
-        error: 'Internal Server Error',
-        details: 'JWT secret is not configured'
-      }, 500)
+      return c.json(
+        {
+          error: "Internal Server Error",
+          details: "JWT secret is not configured",
+        },
+        500
+      );
     }
-    const token = await sign({ id: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + (60 * 60) }, process.env.JWT_SECRET)
+    const token = await sign(
+      {
+        id: user.id,
+        email: user.email,
+        exp: Math.floor(Date.now() / 1000) + 60 * 60,
+      },
+      process.env.JWT_SECRET
+    );
 
-    return c.json({
-      message: 'Login successful',
-      token
-    }, 200)
-
+    return c.json(
+      {
+        message: "Login successful",
+        token,
+      },
+      200
+    );
+  } catch (error) {
+    return c.json(
+      {
+        error: "Internal Server Error",
+        details: "Failed to process login",
+        message: (error as Error).message,
+      },
+      500
+    );
   }
-  catch (error) {
-    return c.json({
-      error: 'Internal Server Error',
-      details: 'Failed to process login',
-      message: (error as Error).message
-    }, 500)
-  }
-
-
-
-
-
-})
-
-
+});
 
 // Sync Domains from GitHub
 app.get("/sync-domains", authMiddleware, async (c) => {
@@ -171,28 +197,31 @@ app.get("/sync-domains", authMiddleware, async (c) => {
     const startTime = new Date();
     await syncDomainsFromGitHub();
 
-    return c.json({
-      status: "success",
-      message: "Domain lists successfully synchronized from GitHub",
-      details: {
-        source: "GitHub disposable-email-domains repository",
-        syncedAt: startTime.toISOString(),
-        duration: `${new Date().getTime() - startTime.getTime()}ms`
+    return c.json(
+      {
+        status: "success",
+        message: "Domain lists successfully synchronized from GitHub",
+        details: {
+          source: "GitHub disposable-email-domains repository",
+          syncedAt: startTime.toISOString(),
+          duration: `${new Date().getTime() - startTime.getTime()}ms`,
+        },
       },
-      timestamp: new Date().toISOString()
-    }, 200);
-
+      200
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to sync domains from GitHub",
-      error: (error as Error).message,
-      timestamp: new Date().toISOString()
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to sync domains from GitHub",
+        error: (error as Error).message,
+      },
+      500
+    );
   }
 });
 
-// 1. Check if Email is Disposable
+// Check if Email is Disposable
 // Check email endpoint with Redis caching
 // app.post("/check-email", async (c) => {
 //   const { email } = await c.req.json();
@@ -268,7 +297,7 @@ app.get("/sync-domains", authMiddleware, async (c) => {
 //   return c.json(result);
 // });
 
-// 2. Verify if Email is Disposable (new endpoint)
+//  Verify if Email is Disposable (new endpoint)
 app.post("/verify-email", authMiddleware, async (c) => {
   try {
     // Get email from request body
@@ -296,10 +325,12 @@ app.post("/verify-email", authMiddleware, async (c) => {
     const allowlistDb = await db
       .select()
       .from(domainListsTable)
-      .where(and(
-        eq(domainListsTable.domain, domain),
-        eq(domainListsTable.type, 'allowlist')
-      ));
+      .where(
+        and(
+          eq(domainListsTable.domain, domain),
+          eq(domainListsTable.type, "allowlist")
+        )
+      );
 
     if (allowlistDb.length > 0) {
       await logAudit(email, domain, ip, "verified_allowlisted_db");
@@ -308,11 +339,16 @@ app.post("/verify-email", authMiddleware, async (c) => {
         disposable: false,
         reason: "Domain allowlisted",
         domain: domain,
-        message: "Email address is valid and safe to use"
+        message: "Email address is valid and safe to use",
       };
 
       try {
-        await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+        await redis.set(
+          `check-email:${domain}`,
+          JSON.stringify(result),
+          "EX",
+          86400
+        );
       } catch (error) {
         console.error("Redis cache update failed:", error);
       }
@@ -324,13 +360,13 @@ app.post("/verify-email", authMiddleware, async (c) => {
     const blocklistDb = await db
       .select()
       .from(domainListsTable)
-      .where(and(
-        eq(domainListsTable.domain, domain),
-        eq(domainListsTable.type, 'disposable')
-      ));
+      .where(
+        and(
+          eq(domainListsTable.domain, domain),
+          eq(domainListsTable.type, "disposable")
+        )
+      );
 
-    console.log(blocklistDb,"1234");
-    
     if (blocklistDb.length > 0) {
       await logAudit(email, domain, ip, "blocked_disposable_db");
       const result = {
@@ -338,11 +374,16 @@ app.post("/verify-email", authMiddleware, async (c) => {
         disposable: true,
         reason: "This email domain is not allowed",
         domain: domain,
-        message: "Please use a different email address from a trusted provider"
+        message: "Please use a different email address from a trusted provider",
       };
 
       try {
-        await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+        await redis.set(
+          `check-email:${domain}`,
+          JSON.stringify(result),
+          "EX",
+          86400
+        );
       } catch (error) {
         console.error("Redis cache update failed:", error);
       }
@@ -354,7 +395,7 @@ app.post("/verify-email", authMiddleware, async (c) => {
     const disposableDomainsList = await db
       .select({ domain: domainListsTable.domain })
       .from(domainListsTable)
-      .where(eq(domainListsTable.type, 'disposable'));
+      .where(eq(domainListsTable.type, "disposable"));
 
     // Check domain similarity using all disposable domains
     const domainMatcher = createDomainMatcher(
@@ -369,11 +410,16 @@ app.post("/verify-email", authMiddleware, async (c) => {
         disposable: true,
         reason: "Similar to known disposable domains",
         domain: domain,
-        message: "Please use a different email address from a trusted provider"
+        message: "Please use a different email address from a trusted provider",
       };
 
       try {
-        await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+        await redis.set(
+          `check-email:${domain}`,
+          JSON.stringify(result),
+          "EX",
+          86400
+        );
       } catch (error) {
         console.error("Redis cache update failed:", error);
       }
@@ -388,166 +434,196 @@ app.post("/verify-email", authMiddleware, async (c) => {
       disposable: false,
       reason: "Domain not found in any lists",
       domain: domain,
-      message: "Email address appears to be valid"
+      message: "Email address appears to be valid",
     };
 
     try {
-      await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
+      await redis.set(
+        `check-email:${domain}`,
+        JSON.stringify(result),
+        "EX",
+        86400
+      );
     } catch (error) {
       console.error("Redis cache update failed:", error);
     }
 
     return c.json(result, 200);
-
   } catch (error) {
     console.error("Verify email error:", error);
-    return c.json({
-      status: "error",
-      message: "Failed to verify email",
-      error: (error as Error).message
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to verify email",
+        error: (error as Error).message,
+      },
+      500
+    );
   }
 });
 
-
-
-
-// 3. Add to Blocklist
+// Add to Blocklist
 app.post("/blocklist", authMiddleware, async (c) => {
   try {
     const { domain } = await c.req.json();
 
     if (!domain) {
-      return c.json({
-        status: "error",
-        message: "Domain is required",
-        timestamp: new Date().toISOString()
-      }, 400);
+      return c.json(
+        {
+          status: "error",
+          message: "Domain is required",
+          timestamp: new Date().toISOString(),
+        },
+        400
+      );
     }
 
     const normalizedDomain = domain.toLowerCase();
     const [existingDomain] = await db
       .select()
       .from(domainListsTable)
-      .where(and(
-        eq(domainListsTable.domain, normalizedDomain),
-      ));
+      .where(and(eq(domainListsTable.domain, normalizedDomain)));
 
-    if (existingDomain?.type === 'disposable') {
-      return c.json({
-        status: "error",
-        message: "Domain already exists in blocklist",
-        timestamp: new Date().toISOString()
-      }, 400);
+    if (existingDomain?.type === "disposable") {
+      return c.json(
+        {
+          status: "error",
+          message: "Domain already exists in blocklist",
+          timestamp: new Date().toISOString(),
+        },
+        400
+      );
     }
 
-    if (existingDomain?.type === 'allowlist') {
+    if (existingDomain?.type === "allowlist") {
       await db
         .update(domainListsTable)
-        .set({ type: 'disposable' })
+        .set({ type: "disposable" })
         .where(eq(domainListsTable.domain, normalizedDomain));
 
-      return c.json({
-        status: "success",
-        disposable: true,
-        message: "Domain moved from allowlist to blocklist",
-        domain: normalizedDomain,
-      }, 200);
+      return c.json(
+        {
+          status: "success",
+          disposable: true,
+          message: "Domain moved from allowlist to blocklist",
+          domain: normalizedDomain,
+        },
+        200
+      );
     }
 
     await db
       .insert(domainListsTable)
-      .values({ domain: normalizedDomain, type: 'disposable' });
+      .values({ domain: normalizedDomain, type: "disposable" });
 
-    return c.json({
-      status: "success",
-      message: "Domain added to blocklist",
-      domain: normalizedDomain,
-    }, 201);
-
+    return c.json(
+      {
+        status: "success",
+        message: "Domain added to blocklist",
+        domain: normalizedDomain,
+      },
+      201
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to add domain to blocklist",
-      error: (error as Error).message,
-      timestamp: new Date().toISOString()
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to add domain to blocklist",
+        error: (error as Error).message,
+        timestamp: new Date().toISOString(),
+      },
+      500
+    );
   }
 });
 
+// Add to Allowlist
 app.post("/allowlist", authMiddleware, async (c) => {
   try {
     const { domain } = await c.req.json();
 
     if (!domain) {
-      return c.json({
-        status: "error",
-        message: "Domain is required",
-        timestamp: new Date().toISOString()
-      }, 400);
+      return c.json(
+        {
+          status: "error",
+          message: "Domain is required",
+        },
+        400
+      );
     }
 
     const normalizedDomain = domain.toLowerCase();
     const [existingDomain] = await db
       .select()
       .from(domainListsTable)
-      .where(and(
-        eq(domainListsTable.domain, normalizedDomain),
-      ));
+      .where(and(eq(domainListsTable.domain, normalizedDomain)));
 
-    if (existingDomain?.type === 'allowlist') {
-      return c.json({
-        status: "error",
-        message: "Domain already exists in allowlist",
-      }, 400);
+    if (existingDomain?.type === "allowlist") {
+      return c.json(
+        {
+          status: "error",
+          message: "Domain already exists in allowlist",
+        },
+        400
+      );
     }
 
-    if (existingDomain?.type === 'disposable') {
+    if (existingDomain?.type === "disposable") {
       await db
         .update(domainListsTable)
-        .set({ type: 'allowlist' })
+        .set({ type: "allowlist" })
         .where(eq(domainListsTable.domain, normalizedDomain));
 
-      return c.json({
-        status: "success",
-        disposable: false,
-        message: "Domain moved from blocklist to allowlist",
-        domain: normalizedDomain,
-      }, 200);
+      return c.json(
+        {
+          status: "success",
+          disposable: false,
+          message: "Domain moved from blocklist to allowlist",
+          domain: normalizedDomain,
+        },
+        200
+      );
     }
 
     await db
       .insert(domainListsTable)
-      .values({ domain: normalizedDomain, type: 'allowlist' });
+      .values({ domain: normalizedDomain, type: "allowlist" });
 
-    return c.json({
-      status: "success",
-      message: "Domain added to allowlist",
-      domain: normalizedDomain,
-      type: "allowlist",
-    }, 201);
-
+    return c.json(
+      {
+        status: "success",
+        message: "Domain added to allowlist",
+        domain: normalizedDomain,
+        type: "allowlist",
+      },
+      201
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to add domain to allowlist",
-      error: (error as Error).message,
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to add domain to allowlist",
+        error: (error as Error).message,
+      },
+      500
+    );
   }
 });
 
-// 5. Get All Domains (with pagination)
+// Get All Domains (with pagination)
 app.get("/domains", authMiddleware, async (c) => {
   try {
     const { type, page = 1, limit = 10 } = c.req.query();
     const offset = (Number(page) - 1) * Number(limit);
 
-    if (type !== 'disposable' && type !== 'allowlist') {
-      return c.json({
-        status: "error",
-        message: "Invalid domain type. Must be 'disposable' or 'allowlist'",
-        timestamp: new Date().toISOString()
-      }, 400);
+    if (type !== "disposable" && type !== "allowlist") {
+      return c.json(
+        {
+          status: "error",
+          message: "Invalid domain type. Must be 'disposable' or 'allowlist'",
+        },
+        400
+      );
     }
 
     // Get domains for current page
@@ -558,118 +634,166 @@ app.get("/domains", authMiddleware, async (c) => {
       .offset(offset)
       .limit(Number(limit));
 
-    return c.json({
-      status: "success",
-      message: `Successfully retrieved ${type} domains`,
-      domains,
-    }, 200);
+    return c.json(
+      {
+        status: "success",
+        message: `Successfully retrieved ${type} domains`,
+        domains,
+      },
+      200
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to fetch domains",
-      error: (error as Error).message,
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to fetch domains",
+        error: (error as Error).message,
+      },
+      500
+    );
   }
 });
 
-// 6. Remove Domain
+// Remove Domain
 app.delete("/remove-domain", authMiddleware, async (c) => {
   try {
     const { domain, type } = await c.req.json();
 
     // Validate inputs
     if (!domain || !type) {
-      return c.json({
-        status: "error",
-        message: "Domain and type are required",
-      }, 400);
+      return c.json(
+        {
+          status: "error",
+          message: "Domain and type are required",
+        },
+        400
+      );
     }
 
-    if (type !== 'disposable' && type !== 'allowlist') {
-      return c.json({
-        status: "error",
-        message: "Invalid domain type. Must be 'disposable' or 'allowlist'",
-      }, 400);
+    if (type !== "disposable" && type !== "allowlist") {
+      return c.json(
+        {
+          status: "error",
+          message: "Invalid domain type. Must be 'disposable' or 'allowlist'",
+        },
+        400
+      );
     }
 
     // Delete from database
     await db
       .delete(domainListsTable)
-      .where(and(
-        eq(domainListsTable.domain, domain),
-        eq(domainListsTable.type, type)
-      ));
+      .where(
+        and(
+          eq(domainListsTable.domain, domain),
+          eq(domainListsTable.type, type)
+        )
+      );
 
     try {
-      const cacheKey = type === 'disposable' ? 'blocklist' : 'allowlist';
+      const cacheKey = type === "disposable" ? "blocklist" : "allowlist";
       const cached = await redis.get(cacheKey);
       const cachedDomains = cached ? JSON.parse(cached) : [];
       cachedDomains.splice(cachedDomains.indexOf(domain), 1);
       await redis.set(cacheKey, JSON.stringify(cachedDomains));
-    }
-    catch (error) {
+    } catch (error) {
       console.error("Redis cache update failed:", error);
-      return c.json({
+      return c.json(
+        {
+          status: "success",
+          message: `Domain successfully removed from ${type} list`,
+          domain: domain,
+          type: type,
+        },
+        200
+      );
+    }
+    return c.json(
+      {
         status: "success",
         message: `Domain successfully removed from ${type} list`,
         domain: domain,
         type: type,
-      }, 200);
-
-    }
-    return c.json({
-      status: "success",
-      message: `Domain successfully removed from ${type} list`,
-      domain: domain,
-      type: type,
-    }, 200);
-
+      },
+      200
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to remove domain",
-      error: (error as Error).message,
-      timestamp: new Date().toISOString()
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to remove domain",
+        error: (error as Error).message,
+        timestamp: new Date().toISOString(),
+      },
+      500
+    );
   }
 });
 
-
-// 7. Refresh Cache
+//  Refresh Cache
 app.post("/refresh-cache", authMiddleware, async (c) => {
   try {
     const domains = await db.select().from(domainListsTable);
 
     const blocklist = domains
-      .filter(d => d.type === 'disposable')
-      .map(d => d.domain);
+      .filter((d) => d.type === "disposable")
+      .map((d) => d.domain);
 
     const allowlist = domains
-      .filter(d => d.type === 'allowlist')
-      .map(d => d.domain);
+      .filter((d) => d.type === "allowlist")
+      .map((d) => d.domain);
 
-    await redis.set("blocklist", JSON.stringify(blocklist));
-    await redis.set("allowlist", JSON.stringify(allowlist));
+    for (const domain of blocklist) {
+      await redis.set(
+        `check-email:${domain}`,
+        JSON.stringify({
+          status: "blocked",
+          disposable: true,
+          reason: "This email domain is not allowed",
+          domain: domain,
+          message:
+            "Please use a different email address from a trusted provider",
+        }),
+        "EX",
+        86400
+      );
+    }
 
-    return c.json({
-      status: "success",
-      message: "Cache refreshed successfully",
-    }, 200);
+    for (const domain of allowlist) {
+      await redis.set(
+        `check-email:${domain}`,
+        JSON.stringify({
+          status: "success",
+          disposable: false,
+          reason: "Domain allowlisted",
+          domain: domain,
+          message: "Email address is valid and safe to use",
+        }),
+        "EX",
+        86400
+      );
+    }
 
+    return c.json(
+      {
+        status: "success",
+        message: "Cache refreshed successfully",
+      },
+      200
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to refresh cache",
-      error: (error as Error).message,
-      timestamp: new Date().toISOString()
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to refresh cache",
+        error: (error as Error).message,
+      },
+      500
+    );
   }
 });
 
-// 8. Get Audit Logs
-
-
-// 9. Get Audit Logs (with pagination)
+// Get Audit Logs (with pagination)
 app.get("/audit-logs/pagination", authMiddleware, async (c) => {
   try {
     const { page = 1, limit = 10 } = c.req.query();
@@ -682,31 +806,39 @@ app.get("/audit-logs/pagination", authMiddleware, async (c) => {
       .limit(Number(limit))
       .orderBy(desc(auditLogsTable.timestamp));
 
-    return c.json({
-      status: "success",
-      message: "Audit logs retrieved successfully",
-      logs,
-    }, 200);
-
+    return c.json(
+      {
+        status: "success",
+        message: "Audit logs retrieved successfully",
+        logs,
+      },
+      200
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to fetch audit logs",
-      error: (error as Error).message,
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to fetch audit logs",
+        error: (error as Error).message,
+      },
+      500
+    );
   }
 });
 
-
+// Get Audit Logs by Email
 app.get("/audit-logs/:email", authMiddleware, async (c) => {
   try {
     const { email } = c.req.param();
 
     if (!email) {
-      return c.json({
-        status: "error",
-        message: "Email is required",
-      }, 400);
+      return c.json(
+        {
+          status: "error",
+          message: "Email is required",
+        },
+        400
+      );
     }
 
     const logs = await db
@@ -715,18 +847,23 @@ app.get("/audit-logs/:email", authMiddleware, async (c) => {
       .where(eq(auditLogsTable.email, email))
       .orderBy(desc(auditLogsTable.timestamp));
 
-    return c.json({
-      status: "success",
-      message: `Audit logs retrieved for ${email}`,
-      logs
-    }, 200);
-
+    return c.json(
+      {
+        status: "success",
+        message: `Audit logs retrieved for ${email}`,
+        logs,
+      },
+      200
+    );
   } catch (error) {
-    return c.json({
-      status: "error",
-      message: "Failed to fetch audit logs",
-      error: (error as Error).message,
-    }, 500);
+    return c.json(
+      {
+        status: "error",
+        message: "Failed to fetch audit logs",
+        error: (error as Error).message,
+      },
+      500
+    );
   }
 });
 

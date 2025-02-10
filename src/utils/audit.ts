@@ -1,7 +1,12 @@
 import { db } from "../db/db";
 import { auditLogsTable } from "../db/schema";
 
-export const logAudit = async (email: string, domain: string, ip: string, action: string) => {
+export const logAudit = async (
+  email: string,
+  domain: string,
+  ip: string,
+  action: string
+) => {
   await db.insert(auditLogsTable).values({
     id: crypto.randomUUID(),
     email,
