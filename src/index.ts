@@ -2,26 +2,21 @@ import { Hono } from "hono";
 import { db } from "@/db/db";
 import { usersTable, domainListsTable, auditLogsTable } from "@/db/schema";
 import { SelectUsersTable, InsertUsersTable } from "@/db/schema";
-import { sign } from "hono/jwt";
-import { normalizeEmail, createDomainMatcher } from "@/utils";
+import { jwt, sign } from "hono/jwt";
+import { normalizeEmail, createDomainMatcher, validateEmail } from "@/utils/email";
 import { redis } from "@/cache";
 import * as bcrypt from "bcryptjs";
 import { eq, and, desc } from "drizzle-orm";
 import { logAudit } from "@/utils/audit";
 import { syncDomainsFromGitHub } from "@/utils/sync-domains-from-github";
-import { authMiddleware, logger } from "./middleware/auth";
+import { authMiddleware, logger } from "@/middleware/auth";
 
-const app = new Hono().basePath("/api.nomorejunk.com");
+const app = new Hono();
 
 app.use(logger);
 
-function validateEmail(email: string): boolean {
-  const emailRegex = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,4}$/;
-  return emailRegex.test(email);
-}
-
 app.get("/", (c) => {
-  return c.text("Hello Hono!");
+  return c.text("Hello World");
 });
 
 // register user
@@ -32,8 +27,8 @@ app.post("/register", async (c) => {
     if (!email) {
       return c.json(
         {
-          error: "Registration Error",
-          details: "Email is required",
+          error: "Oops! You forgot to provide an email address",
+          details: "We need your email to create your account",
           field: "email",
         },
         400
@@ -42,8 +37,8 @@ app.post("/register", async (c) => {
     if (!password) {
       return c.json(
         {
-          error: "Registration Error",
-          details: "Password is required",
+          error: "Hold on! You need a password",
+          details: "Please create a password to secure your account",
           field: "password",
         },
         400
@@ -66,8 +61,8 @@ app.post("/register", async (c) => {
     if (existingUser) {
       return c.json(
         {
-          error: "Registration Error",
-          details: "Email already exists",
+          error: "This email is already taken",
+          details: "Looks like you already have an account. Try logging in instead?",
           field: "email",
         },
         409
@@ -89,7 +84,7 @@ app.post("/register", async (c) => {
 
     return c.json(
       {
-        message: "Registration successful",
+        message: "Welcome aboard! Your account has been created successfully",
         user: userResponse,
       },
       201
@@ -97,8 +92,8 @@ app.post("/register", async (c) => {
   } catch (error) {
     return c.json(
       {
-        error: "Internal Server Error",
-        details: "Failed to process registration",
+        error: "Something went wrong on our end",
+        details: "We couldn't create your account right now. Please try again in a moment",
         message: (error as Error).message,
       },
       500
@@ -114,11 +109,11 @@ app.post("/login", async (c) => {
     if (!email || !password) {
       return c.json(
         {
-          error: "Validation Error",
-          details: "Missing credentials",
+          error: "We need both your email and password",
+          details: "Please fill in all the fields",
           fields: {
-            email: !email ? "email is required" : null,
-            password: !password ? "Password is required" : null,
+            email: !email ? "Don't forget your email address" : null,
+            password: !password ? "Your password is missing" : null,
           },
         },
         400
@@ -137,8 +132,8 @@ app.post("/login", async (c) => {
     if (!user) {
       return c.json(
         {
-          error: "Authentication Error",
-          details: "Invalid email or password",
+          error: "Hmm... that doesn't look right",
+          details: "The email or password you entered doesn't match our records",
         },
         401
       );
@@ -148,8 +143,8 @@ app.post("/login", async (c) => {
     if (!isValidPassword) {
       return c.json(
         {
-          error: "Authentication Error",
-          details: "Invalid email or password",
+          error: "Hmm... that doesn't look right",
+          details: "The email or password you entered doesn't match our records",
         },
         401
       );
@@ -174,7 +169,7 @@ app.post("/login", async (c) => {
 
     return c.json(
       {
-        message: "Login successful",
+        message: "Welcome back! You're now logged in",
         token,
       },
       200
@@ -182,8 +177,8 @@ app.post("/login", async (c) => {
   } catch (error) {
     return c.json(
       {
-        error: "Internal Server Error",
-        details: "Failed to process login",
+        error: "Oops! Something went wrong",
+        details: "We couldn't log you in right now. Please try again",
         message: (error as Error).message,
       },
       500
@@ -200,7 +195,7 @@ app.get("/sync-domains", authMiddleware, async (c) => {
     return c.json(
       {
         status: "success",
-        message: "Domain lists successfully synchronized from GitHub",
+        message: "All done! We've updated our domain lists",
         details: {
           source: "GitHub disposable-email-domains repository",
           syncedAt: startTime.toISOString(),
@@ -213,7 +208,7 @@ app.get("/sync-domains", authMiddleware, async (c) => {
     return c.json(
       {
         status: "error",
-        message: "Failed to sync domains from GitHub",
+        message: "We couldn't update the domain lists right now",
         error: (error as Error).message,
       },
       500
@@ -221,81 +216,6 @@ app.get("/sync-domains", authMiddleware, async (c) => {
   }
 });
 
-// Check if Email is Disposable
-// Check email endpoint with Redis caching
-// app.post("/check-email", async (c) => {
-//   const { email } = await c.req.json();
-//   const ip = c.req.header("x-forwarded-for") || c.req.ip;
-//   const normalizedEmail = normalizeEmail(email);
-//   const domain = normalizedEmail.split("@")[1]; // gmail.com
-
-//   // Check Redis cache first
-//   const cachedResult = await redis.get(`check-email:${domain}`);
-//   if (cachedResult) {
-//     return c.json(JSON.parse(cachedResult));
-//   }
-
-//   // Check allowlist
-//   const allowlist = await db
-//     .select()
-//     .from(domainListsTable)
-//     .where(and(
-//       eq(domainListsTable.domain, domain),
-//       eq(domainListsTable.type, 'allowlist')
-//     ));
-//   if (allowlist.length > 0) {
-//     const result = { disposable: false, reason: "Allowlisted" };
-//     // Cache result for 1 day (86400 seconds)
-//     await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
-//     return c.json(result);
-//   }
-
-//   // Check blocklist
-//   const blocklist = await db
-//     .select()
-//     .from(domainListsTable)
-//     .where(and(
-//       eq(domainListsTable.domain, domain),
-//       eq(domainListsTable.type, 'disposable')
-//     ));
-//   if (blocklist.length > 0) {
-//     await logAudit(email, domain, ip, "blocked");
-//     const result = { disposable: true, reason: "Blocklisted" };
-//     // Cache result for 1 day (86400 seconds)
-//     await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
-//     return c.json(result);
-//   }
-
-//   // Fetch domain lists for matching
-//   const disposableDomainsList = await db
-//     .select({ domain: domainListsTable.domain })
-//     .from(domainListsTable)
-//     .where(eq(domainListsTable.type, 'disposable'));
-
-//   // Create domain matcher which will be used to check domain similarity ex: gmail.com vs gmaill.com, yahoomail.com, etc.
-//   const domainMatcher = createDomainMatcher(
-//     disposableDomainsList.map((d) => d.domain),
-//   );
-
-//   // Check domain similarity
-//   const isSimilar = domainMatcher.match(domain);
-//   if (isSimilar) {
-//     await logAudit(email, domain, ip, "blocked_similarity");
-//     const result = {
-//       disposable: true,
-//       reason: "Similar to known disposable domains",
-//     };
-//     // Cache result for 1 day (86400 seconds)
-//     await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
-//     return c.json(result);
-//   }
-
-//   await logAudit(email, domain, ip, "verified");
-//   const result = { disposable: false };
-//   // Cache result for 1 day (86400 seconds)
-//   await redis.set(`check-email:${domain}`, JSON.stringify(result), 'EX', 86400);
-//   return c.json(result);
-// });
 
 //  Verify if Email is Disposable (new endpoint)
 app.post("/verify-email", authMiddleware, async (c) => {
@@ -305,7 +225,7 @@ app.post("/verify-email", authMiddleware, async (c) => {
 
     // Check if email is provided
     if (!email) {
-      return c.json({ error: "Email is required" }, 400);
+      return c.json({ error: "Hey! We need an email address to check" }, 400);
     }
 
     // Get IP address of the request
@@ -337,9 +257,9 @@ app.post("/verify-email", authMiddleware, async (c) => {
       const result = {
         status: "success",
         disposable: false,
-        reason: "Domain allowlisted",
+        reason: "This domain is on our trusted list",
         domain: domain,
-        message: "Email address is valid and safe to use",
+        message: "Great news! This email address is from a trusted provider",
       };
 
       try {
@@ -372,9 +292,9 @@ app.post("/verify-email", authMiddleware, async (c) => {
       const result = {
         status: "blocked",
         disposable: true,
-        reason: "This email domain is not allowed",
+        reason: "This domain isn't allowed",
         domain: domain,
-        message: "Please use a different email address from a trusted provider",
+        message: "This looks like a temporary email address. Please use your regular email instead",
       };
 
       try {
@@ -432,9 +352,9 @@ app.post("/verify-email", authMiddleware, async (c) => {
     const result = {
       status: "success",
       disposable: false,
-      reason: "Domain not found in any lists",
+      reason: "This domain seems legitimate",
       domain: domain,
-      message: "Email address appears to be valid",
+      message: "This email address looks good to use",
     };
 
     try {
@@ -454,7 +374,7 @@ app.post("/verify-email", authMiddleware, async (c) => {
     return c.json(
       {
         status: "error",
-        message: "Failed to verify email",
+        message: "We ran into a problem checking this email",
         error: (error as Error).message,
       },
       500
@@ -519,7 +439,7 @@ app.post("/blocklist", authMiddleware, async (c) => {
     return c.json(
       {
         status: "success",
-        message: "Domain added to blocklist",
+        message: "Got it! We've added this domain to the blocked list",
         domain: normalizedDomain,
       },
       201
@@ -592,7 +512,7 @@ app.post("/allowlist", authMiddleware, async (c) => {
     return c.json(
       {
         status: "success",
-        message: "Domain added to allowlist",
+        message: "Perfect! This domain is now on our trusted list",
         domain: normalizedDomain,
         type: "allowlist",
       },
@@ -637,7 +557,7 @@ app.get("/domains", authMiddleware, async (c) => {
     return c.json(
       {
         status: "success",
-        message: `Successfully retrieved ${type} domains`,
+        message: `Here are the ${type} domains you requested`,
         domains,
       },
       200
@@ -711,7 +631,7 @@ app.delete("/remove-domain", authMiddleware, async (c) => {
     return c.json(
       {
         status: "success",
-        message: `Domain successfully removed from ${type} list`,
+        message: `All set! We've removed this domain from the ${type} list`,
         domain: domain,
         type: type,
       },
@@ -777,7 +697,7 @@ app.post("/refresh-cache", authMiddleware, async (c) => {
     return c.json(
       {
         status: "success",
-        message: "Cache refreshed successfully",
+        message: "Cache refreshed! Everything is up to date now",
       },
       200
     );
@@ -809,7 +729,7 @@ app.get("/audit-logs/pagination", authMiddleware, async (c) => {
     return c.json(
       {
         status: "success",
-        message: "Audit logs retrieved successfully",
+        message: "Here's your activity history",
         logs,
       },
       200
@@ -818,7 +738,7 @@ app.get("/audit-logs/pagination", authMiddleware, async (c) => {
     return c.json(
       {
         status: "error",
-        message: "Failed to fetch audit logs",
+        message: "Oops! We couldn't load your activity history right now",
         error: (error as Error).message,
       },
       500
@@ -835,7 +755,7 @@ app.get("/audit-logs/:email", authMiddleware, async (c) => {
       return c.json(
         {
           status: "error",
-          message: "Email is required",
+          message: "We need an email address to look up the activity history",
         },
         400
       );
@@ -847,10 +767,21 @@ app.get("/audit-logs/:email", authMiddleware, async (c) => {
       .where(eq(auditLogsTable.email, email))
       .orderBy(desc(auditLogsTable.timestamp));
 
+    if (logs.length === 0) {
+      return c.json(
+        {
+          status: "success",
+          message: `No activity found for ${email} yet`,
+          logs: [],
+        },
+        200
+      );
+    }
+
     return c.json(
       {
         status: "success",
-        message: `Audit logs retrieved for ${email}`,
+        message: `Here's the activity history for ${email}`,
         logs,
       },
       200
@@ -859,7 +790,7 @@ app.get("/audit-logs/:email", authMiddleware, async (c) => {
     return c.json(
       {
         status: "error",
-        message: "Failed to fetch audit logs",
+        message: "We had trouble retrieving the activity history",
         error: (error as Error).message,
       },
       500

@@ -2,98 +2,111 @@ import "dotenv/config";
 import { redis } from "@/cache";
 import { db } from "@/db/db";
 import { domainListsTable, type InsertDomainListsTable, DomainType } from "@/db/schema";
-import { eq } from "drizzle-orm";
-import "dotenv/config";
 
-// Fetch and update blocklist/allowlist data from GitHub
+const BATCH_SIZE = 5000;
+
+interface DomainCacheData {
+  status: "blocked" | "success";
+  disposable: boolean;
+  reason: string;
+  domain: string;
+  message: string;
+}
+
+async function fetchDomainList(url: string): Promise<string[]> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch domain list: ${response.statusText}`);
+  }
+  const text = await response.text();
+  return text.split("\n").filter(Boolean).map(domain => domain.trim().toLowerCase());
+}
+
+async function batchInsertDomains(domains: InsertDomainListsTable[]) {
+  for (let i = 0; i < domains.length; i += BATCH_SIZE) {
+    const batch = domains.slice(i, i + BATCH_SIZE);
+    await db.insert(domainListsTable).values(batch);
+  }
+}
+
+async function updateRedisCache(domains: { domain: string; type: DomainType }[]) {
+  const pipeline = redis.pipeline();
+  
+  for (const { domain, type } of domains) {
+    const cacheData: DomainCacheData = type === 'disposable' 
+      ? {
+          status: "blocked",
+          disposable: true,
+          reason: "This email domain is not allowed",
+          domain,
+          message: "Please use a different email address from a trusted provider"
+        }
+      : {
+          status: "success",
+          disposable: false,
+          reason: "Domain allowlisted",
+          domain,
+          message: "Email address is valid and safe to use"
+        };
+
+    pipeline.set(
+      `check-email:${domain}`,
+      JSON.stringify(cacheData),
+      "EX",
+      86400 // 1 day
+    );
+  }
+
+  await pipeline.exec();
+}
+
 export async function syncDomainsFromGitHub() {
-  try {
-    // Get blocklist
-    const BLOCKLIST_URL = process.env.BLOCKLIST_URL!;
-    const blocklistResponse = await fetch(BLOCKLIST_URL);
-    const blocklistText = await blocklistResponse.text();
-    const blocklistDomains = blocklistText.split("\n").filter(Boolean);
+  const BLOCKLIST_URL = process.env.BLOCKLIST_URL;
+  const ALLOWLIST_URL = process.env.ALLOWLIST_URL;
 
-    // Get allowlist
-    const ALLOWLIST_URL = process.env.ALLOWLIST_URL!;
-    const allowlistResponse = await fetch(ALLOWLIST_URL);
-    const allowlistText = await allowlistResponse.text();
-    const allowlistDomains = allowlistText.split("\n").filter(Boolean);
+  if (!BLOCKLIST_URL || !ALLOWLIST_URL) {
+    throw new Error("Missing required environment variables");
+  }
+
+  try {
+    // Fetch both lists in parallel
+    const [blocklistDomains, allowlistDomains] = await Promise.all([
+      fetchDomainList(BLOCKLIST_URL),
+      fetchDomainList(ALLOWLIST_URL)
+    ]);
 
     // Clear existing domains
     await db.delete(domainListsTable);
 
-    // Update the blocklist in the database
-    const blocklistData: InsertDomainListsTable[] = blocklistDomains.map(
-      (domain) => ({
-        domain: domain.trim().toLowerCase(),
-        type: 'disposable' as DomainType,
-      })
-    );
+    // Prepare domain data
+    const blocklistData: InsertDomainListsTable[] = blocklistDomains.map(domain => ({
+      domain,
+      type: 'disposable' as DomainType
+    }));
 
-    for (let i = 0; i < blocklistData.length; i += 1000) {
-      const batch = blocklistData.slice(i, i + 1000);
-      await db.insert(domainListsTable).values(batch);
-    }
-    // Update the allowlist in the database
-    const allowlistData: InsertDomainListsTable[] = allowlistDomains.map(
-      (domain) => ({
-        domain: domain.trim().toLowerCase(),
-        type: "allowlist" as const,
-      })
-    );
+    const allowlistData: InsertDomainListsTable[] = allowlistDomains.map(domain => ({
+      domain,
+      type: "allowlist" as DomainType
+    }));
 
-    for (let i = 0; i < allowlistData.length; i += 1000) {
-      const batch = allowlistData.slice(i, i + 1000);
-      await db.insert(domainListsTable).values(batch);
-    }
-
-    // Refresh the Redis cache
-    const [updatedBlocklist, updatedAllowlist] = await Promise.all([
-      db
-        .select()
-        .from(domainListsTable)
-        .where(eq(domainListsTable.type, "disposable")),
-      db
-        .select()
-        .from(domainListsTable)
-        .where(eq(domainListsTable.type, "allowlist")),
+    // Insert domains in batches
+    await Promise.all([
+      batchInsertDomains(blocklistData),
+      batchInsertDomains(allowlistData)
     ]);
 
-    for (const item of updatedBlocklist) {
-      await redis.set(
-        `check-email:${item.domain}`,
-        JSON.stringify({
-          status: "blocked",
-          disposable: true,
-          reason: "This email domain is not allowed",
-          domain: item.domain,
-          message:
-            "Please use a different email address from a trusted provider",
-        }),
-        "EX",
-        86400
-      );
-    }
+    // Update Redis cache
+    const allDomains = [
+      ...blocklistData.map(d => ({ domain: d.domain, type: d.type })),
+      ...allowlistData.map(d => ({ domain: d.domain, type: d.type }))
+    ];
 
-    for (const item of updatedAllowlist) {
-      await redis.set(
-        `check-email:${item.domain}`,
-        JSON.stringify({
-          status: "success",
-          disposable: false,
-          reason: "Domain allowlisted",
-          domain: item.domain,
-          message: "Email address is valid and safe to use",
-        }),
-        "EX",
-        86400
-      );
-    }
+    await updateRedisCache(allDomains);
 
-    console.log("Successfully synced domains from GitHub.");
+    console.log(`Successfully synced ${allDomains.length} domains from GitHub`);
   } catch (error) {
-    console.error("Error syncing domains:", error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error("Error syncing domains:", errorMessage);
     throw error;
   }
 }

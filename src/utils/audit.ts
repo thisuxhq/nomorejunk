@@ -1,26 +1,23 @@
-import { db } from "../db/db";
-import { auditLogsTable } from "../db/schema";
+import { db } from "@/db/db";
+import { auditLogsTable } from "@/db/schema";
 
-export const logAudit = async (
+
+export async function logAudit(
   email: string,
   domain: string,
   ip: string,
   action: string
-) => {
-  await db.insert(auditLogsTable).values({
-    id: crypto.randomUUID(),
-    email,
-    domain,
-    action,
-    ip,
-  });
+): Promise<void> {
+  try {
+    await db.insert(auditLogsTable).values({
+      email,
+      domain,
+      action,
+      ip,
+    });
+  } catch (error) {
+    console.error("Error logging audit:", error);
+    throw error;
+  }
 };
 
-// output: sample
-// {
-//   email: "test@gmail.com",
-//   domain: "gmail.com",
-//   action: "blocked",
-//   ip: "127.0.0.1",
-//   timestamp: "2025-02-05T12:00:00Z"
-// }

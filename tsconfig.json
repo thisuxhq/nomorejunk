@@ -5,7 +5,9 @@
     "jsxImportSource": "hono/jsx",
     "baseUrl": "./", // Base directory for resolving non-relative module names
     "paths": {
-      "@/*": ["src/*"] // Alias "@" to the "src" folder
+      "@/*": [
+        "src/*"
+      ] // Alias "@" to the "src" folder
     }
   }
 }
